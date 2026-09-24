@@ -1932,7 +1932,8 @@ static void panel_gesture_cb(lv_event_t *e)
 {
 	ARG_UNUSED(e);
 	if (confirm == NULL && bright_ov == NULL &&
-	    lv_indev_get_gesture_dir(lv_indev_active()) == LV_DIR_RIGHT) {
+	    (lv_indev_get_gesture_dir(lv_indev_active()) == LV_DIR_RIGHT ||
+	     lv_indev_get_gesture_dir(lv_indev_active()) == LV_DIR_TOP)) {
 		close_panel();
 	}
 }
@@ -2362,19 +2363,8 @@ BUILD_ASSERT(FOOT_Y2 + 16 <= 240,
 
 }
 
-/*
- * A stroke in progress, for the rail to draw.
- *
- * Guarded by the same three conditions the completed stroke is, and for the
- * same reasons: with the panel open the gauge screen is not visible, and
- * during the mute the page has just changed and the rail is already saying so.
- * Showing a preview in either case would be the indicator contradicting the
- * screen.
- *
- * Horizontal strokes report nothing. They mean settings and the boot clip,
- * which are not page changes, and growing a rail mark for one would promise
- * something that is not about to happen.
- */
+/* The direct touch detector still reports progress. There is no page rail
+ * to animate now that both providers are visible at once. */
 /*
  * Is something modal on lv_layer_top waiting to be answered?
  *
@@ -2401,18 +2391,10 @@ static bool modal_up(void)
 
 static void swipe_progress_cb(enum ui_swipe_dir dir, int pct)
 {
-	int delta = 0;
-
-	/* No page preview under a modal either: the rail would grow a mark
-	 * promising a page change that modal_up() is about to refuse. */
-	if (panel == NULL && !modal_up() && !ui_anim_gesture_muted()) {
-		if (dir == UI_SWIPE_UP) {
-			delta = 1;
-		} else if (dir == UI_SWIPE_DOWN) {
-			delta = -1;
-		}
-	}
-	usage_view_page_preview(delta, delta ? pct : 0);
+	ARG_UNUSED(dir);
+	ARG_UNUSED(pct);
+	/* Both providers are visible together; there is no page rail to preview. */
+	usage_view_page_preview(0, 0);
 }
 
 /*
@@ -2446,84 +2428,33 @@ static void swipe_cb(enum ui_swipe_dir dir)
 		return;
 	}
 	if (panel != NULL) {
+		if (dir == UI_SWIPE_UP && confirm == NULL && bright_ov == NULL) {
+			close_panel();
+		}
 		return;
 	}
 	if (ui_anim_gesture_muted()) {
 		return;	/* the swipe that just closed the clip, replayed */
 	}
-	if (dir == UI_SWIPE_LEFT) {
-		/* Not off the CONNECTING screen. A swipe is the ACCIDENTAL
-		 * route -- see the edge zones below, which stay open on
-		 * purpose. */
+	if (dir == UI_SWIPE_DOWN) {
+		/* Keep the deliberate edge tap available during CONNECTING, but
+		 * avoid opening settings from an accidental stroke there. */
 		if (usage_view_takeover_active()) {
 			return;
 		}
 		want_open = true;	/* run from the mode loop; see do_open */
-	} else if (dir == UI_SWIPE_RIGHT) {
-		/* The left chevron's promise: the boot clip on loop. Only
-		 * flagged here -- the mode loop runs the player from thread
-		 * context, never from inside an LVGL event. */
-		ui_anim_request();
-	} else if (dir == UI_SWIPE_UP || dir == UI_SWIPE_DOWN) {
-		/*
-		 * The provider stack. Content follows the finger, the way a
-		 * list does: swiping UP pulls the next page in from below.
-		 *
-		 * Flagged for the mode loop like the two above, and for the
-		 * same reason: this became a wipe transition when the cut was
-		 * judged not to read as a swipe, and ui_slide_run() owns
-		 * lv_refr_now() and cannot be re-entered from inside
-		 * lv_timer_handler(). It used to run right here, back when a
-		 * page change was one repaint.
-		 *
-		 * Asked BEFORE flagging, not after: arming a transition that
-		 * cannot move is 650 ms of frozen panel for nothing, and with
-		 * one provider reporting -- or during the CONNECTING takeover,
-		 * where there is no data and so only one page -- that is every
-		 * vertical swipe there is.
-		 */
-		int step = (dir == UI_SWIPE_UP) ? 1 : -1;
-
-		/*
-		 * At the end of the stack, a vertical swipe goes the only way
-		 * it can.
-		 *
-		 * Up is "next" because content follows the finger, and that is
-		 * a defensible model right up until someone uses it. Across
-		 * three builds on 2026-08-27 every vertical stroke the user
-		 * made went DOWN -- including after the cue was corrected to
-		 * point up -- and on page 0 down asks for a page that does not
-		 * exist, so nothing happened, six times.
-		 *
-		 * The device has TWO pages. "Which direction is forwards" is a
-		 * question a two-item stack does not really have, and the ask
-		 * was "a swipe down/up will switch the mode", not "a swipe up
-		 * advances an ordered list". So when the requested direction
-		 * has nowhere to go and the other one does, take the other one.
-		 *
-		 * This is not a wrap. In the middle of a longer stack both
-		 * directions are available and each still does its own thing;
-		 * only an end, where one of them is dead, hands over.
-		 */
-		if (!usage_view_can_page(step) && usage_view_can_page(-step)) {
-			step = -step;
-		}
-		if (usage_view_can_page(step)) {
-			want_page = step;
-		}
 	}
 }
 
 /*
- * Invisible tap strips along both screen edges: the chevrons drawn there
- * read as buttons, so tapping them must work too (tried on hardware
- * 2026-07-17). GESTURE_BUBBLE keeps the swipes alive across the strips.
+ * The right chevron also has an invisible tap zone. A resistive panel can
+ * drop a moving finger, so this stays as a reliable way into settings.
  *
- * Both zones consult the gesture mute, which is not obvious: they are CLICKED
+ * The zone consults the gesture mute, which is not obvious: it is a CLICKED
  * handlers, and a swipe is not a click. But LVGL sends CLICKED on release
  * whenever the object was pressed and nothing scrolled -- it does not suppress
  * it because it already sent GESTURE (lv_indev.c) -- so a swipe whose release
- * happens to land inside a 44x150 strip fires that strip's button as well. The
+ * happens to land inside the 44x150 strip fires its button as well. The
  * mute is what stops the replayed tail of a transition swipe from re-opening
  * the thing the transition just closed.
  *
@@ -2600,82 +2531,6 @@ static void zone_settings_cb(lv_event_t *e)
 	}
 }
 
-static void zone_anim_cb(lv_event_t *e)
-{
-	ARG_UNUSED(e);
-	if (zone_was_a_tap()) {
-		ui_anim_request();
-	}
-}
-
-/*
- * Tapping the rail changes page, which is what makes up/down as reliable as
- * left/right finally are.
- *
- * The two horizontal gestures have had a tap path since the beginning: a
- * chevron drawn at each edge with an invisible 44x150 zone behind it. That is
- * the ONLY reason they feel dependable -- measured on 2026-08-28 they miss at
- * about the same rate as the vertical one (a 32 px horizontal stroke was
- * refused in the same session that refused 17, 19 and 22 px vertical ones).
- * The difference is that a missed horizontal swipe leaves a chevron to press,
- * and a missed vertical one left nothing at all, so every miss was a dead end.
- *
- * A resistive panel is good at presses and bad at slides, and that is not
- * something thresholds can fix: every reliability problem in this file's
- * history traced to contact pressure breaking under a MOVING finger. The swipe
- * stays, because it works for a committed stroke and it is the faster way once
- * you know it. It is just no longer the only way.
- *
- * No new furniture. The zone sits over the band the rail and the provider name
- * already occupy, so what you press is what was already telling you there was
- * somewhere to go -- exactly the arrangement the edge chevrons have, where the
- * drawn thing is the affordance and the hit area is invisible and much larger
- * than it.
- *
- * 200 x 44 is 35.6 x 7.8 mm. Wider than it looks like it needs to be because
- * the thing being aimed at is 6 px tall, and the cost of overshooting is
- * nothing: below the countdowns there is only this.
- */
-#define PAGE_ZONE_W	200
-#define PAGE_ZONE_H	44
-
-static void zone_page_cb(lv_event_t *e)
-{
-	ARG_UNUSED(e);
-
-	if (!zone_was_a_tap()) {
-		return;
-	}
-	/*
-	 * Same end-of-stack rule as the swipe, so the two controls cannot
-	 * disagree about where a tap goes: try forwards, and take backwards if
-	 * forwards has nowhere to go. With two pages that is simply "the other
-	 * one".
-	 */
-	if (usage_view_can_page(1)) {
-		want_page = 1;
-	} else if (usage_view_can_page(-1)) {
-		want_page = -1;
-	}
-}
-
-static void mk_page_zone(lv_obj_t *scr)
-{
-	lv_obj_t *z = lv_btn_create(scr);
-
-	lv_obj_set_size(z, PAGE_ZONE_W, PAGE_ZONE_H);
-	lv_obj_set_style_bg_opa(z, LV_OPA_TRANSP, 0);
-	lv_obj_set_style_shadow_width(z, 0, 0);
-	lv_obj_align(z, LV_ALIGN_BOTTOM_MID, 0, 0);
-	/* A swipe that starts here must still reach the screen, or putting a
-	 * target under the rail would kill the gesture it is meant to back up. */
-	lv_obj_add_flag(z, LV_OBJ_FLAG_GESTURE_BUBBLE);
-	lv_obj_add_event_cb(z, zone_page_cb, LV_EVENT_CLICKED, NULL);
-	/* Behind everything: it is a hit area, not a surface, and the rail and
-	 * the name have to keep drawing over it. */
-	lv_obj_move_background(z);
-}
-
 static void mk_edge_zone(lv_obj_t *scr, lv_align_t align, lv_event_cb_t cb)
 {
 	lv_obj_t *z = lv_btn_create(scr);
@@ -2742,8 +2597,6 @@ void ui_settings_attach(lv_obj_t *scr)
 	 */
 	ui_swipe_init(swipe_cb, swipe_progress_cb);
 	mk_edge_zone(scr, LV_ALIGN_RIGHT_MID, zone_settings_cb);
-	mk_edge_zone(scr, LV_ALIGN_LEFT_MID, zone_anim_cb);
-	mk_page_zone(scr);
 
 	/* The OTA watcher runs from here on, not from the panel build: the boot
 	 * prompt, the download bar and the outcome popup are all screen-level

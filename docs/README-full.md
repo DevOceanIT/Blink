@@ -80,7 +80,14 @@ Blink never sees a credential and never sends anything anywhere. It reads figure
 
 When two of them disagree, the most recently observed number wins - field by field, so a source that knows your reset time still supplies it even when a fresher one takes over the percentage. [`docs/multi-provider.md`](multi-provider.md) has the details.
 
-**Two providers get a page each**, rather than sharing the dials. The name at the bottom of the screen says whose numbers you are looking at, and tapping it switches - as does a swipe up or down. Each page carries its own freshness, so a Codex reading that has gone quiet never puts "reading is old" over live Claude numbers. Changing page moves the needles from one reading to the other instead of redrawing the screen, because this is an instrument and that is what an instrument does.
+**Claude and Codex appear together.** Each has its own five-hour and
+seven-day readings and reset times. A downward swipe opens settings; the
+right-edge chevron can be tapped as a backup. Swipe up or use Back to close
+settings. The small marks at the upper left show session activity, not
+provider selection. The rear RGB LED follows whichever available usage window
+is closest to its limit: green below 60%, yellow at 60-74%, orange at 75-89%,
+and red from 90%. It turns off when the host disconnects or no reading is
+available.
 
 ## What's in here
 

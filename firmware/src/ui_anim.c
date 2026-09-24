@@ -1,6 +1,6 @@
 /*
- * The boot clip on demand: swipe right on the gauges and the eyes play on
- * loop until a swipe puts the gauges back.
+ * Boot clip replay engine. The gauge screen no longer exposes its former
+ * right-swipe shortcut; that gesture conflicted with simpler navigation.
  *
  * Rendering reuses the splash trick (see ui_boot.c): a bare clay rectangle is
  * painted exactly once, and the clip's delta-RLE frames stream straight to the

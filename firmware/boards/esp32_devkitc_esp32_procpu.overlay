@@ -59,6 +59,17 @@
 			pwms = <&ledc0 0 PWM_HZ(1000) PWM_POLARITY_NORMAL>;
 			label = "TFT backlight";
 		};
+		/* CYD rear common-anode RGB LED. Active-low PWM makes a larger
+		 * pulse duty mean a brighter channel, including amber blends. */
+		rear_red: rear_red {
+			pwms = <&ledc0 1 PWM_HZ(1000) PWM_POLARITY_INVERTED>;
+		};
+		rear_green: rear_green {
+			pwms = <&ledc0 2 PWM_HZ(1000) PWM_POLARITY_INVERTED>;
+		};
+		rear_blue: rear_blue {
+			pwms = <&ledc0 3 PWM_HZ(1000) PWM_POLARITY_INVERTED>;
+		};
 	};
 
 	/*
@@ -127,7 +138,10 @@
 
 	ledc0_cyd: ledc0_cyd {
 		group1 {
-			pinmux = <LEDC_CH0_GPIO21>;
+			pinmux = <LEDC_CH0_GPIO21>,
+				 <LEDC_CH1_GPIO4>,
+				 <LEDC_CH2_GPIO16>,
+				 <LEDC_CH3_GPIO17>;
 			output-enable;
 		};
 	};
@@ -179,6 +193,25 @@
 	channel0@0 {
 		reg = <0x0>;
 		timer = <0>;
+	};
+
+	/* Keep all three rear LED channels off from driver init onward. */
+	channel1@1 {
+		reg = <1>;
+		timer = <1>;
+		inverted;
+	};
+
+	channel2@2 {
+		reg = <2>;
+		timer = <1>;
+		inverted;
+	};
+
+	channel3@3 {
+		reg = <3>;
+		timer = <1>;
+		inverted;
 	};
 };
 

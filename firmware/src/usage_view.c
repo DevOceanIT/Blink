@@ -14,6 +14,7 @@
 #include "fmt.h"
 #include "usage_state.h"
 #include "cfg_store.h"
+#include "status_led.h"
 
 /* Severity colours: green under 60%, amber approaching, red near the limit. */
 #define COL_BG		lv_color_hex(0x0E1116)
@@ -219,6 +220,17 @@ static struct page_data pg[RAIL_PAGES_MAX];
 static int cur_page;
 static lv_obj_t *rail_dot[RAIL_PAGES_MAX];
 
+/* Two providers share one screen. Each row keeps its own windows and age. */
+struct combined_row {
+	lv_obj_t *name;
+	lv_obj_t *age;
+	lv_obj_t *pct[2];
+	lv_obj_t *bar[2];
+	lv_obj_t *detail[2];
+};
+static lv_obj_t *combined_panel;
+static struct combined_row combined[RAIL_PAGES_MAX];
+
 static const char *page_tag(int i)
 {
 	return i == 0 ? provider1_tag : provider2_tag;
@@ -250,6 +262,7 @@ static int page_count(void)
 static void refresh_provider1(void);
 static void refresh_rail(void);
 static void render_gauges(void);
+static void render_combined(void);
 static lv_obj_t *overlay;	/* full-screen "no data" takeover */
 static lv_obj_t *wait_big;	/* the takeover's CONNECTING title */
 static bool built;
@@ -258,6 +271,16 @@ static int32_t age_s = -1;	/* seconds since the last usage message */
 static double last_s_pct = -1;	/* latest numbers, for the near-limit hint */
 static double last_w_pct = -1;
 static enum usage_status last_status = USAGE_STATUS_DISCONNECTED;
+
+static void refresh_status_led(void)
+{
+	status_led_update(pg[0].have ? pg[0].s_pct : -1,
+			  pg[0].have ? pg[0].w_pct : -1,
+			  provider2_tag[0] && pg[1].have ? pg[1].s_pct : -1,
+			  provider2_tag[0] && pg[1].have ? pg[1].w_pct : -1,
+			  last_status == USAGE_STATUS_OK ||
+			  last_status == USAGE_STATUS_STALE);
+}
 
 /*
  * Per-model weekly windows -- and the long-press card that picks between
@@ -608,8 +631,80 @@ static void peek_scrim_cb(lv_event_t *e)
 
 static lv_obj_t *gauge_scr;
 
+static lv_obj_t *combined_label(lv_obj_t *parent, int x, int y, int width,
+				lv_color_t color)
+{
+	lv_obj_t *label = lv_label_create(parent);
+
+	lv_label_set_text(label, "");
+	lv_label_set_long_mode(label, LV_LABEL_LONG_DOT);
+	lv_obj_set_width(label, width);
+	lv_obj_set_pos(label, x, y);
+	lv_obj_set_style_text_color(label, color, 0);
+	return label;
+}
+
+static void build_combined(lv_obj_t *scr)
+{
+	combined_panel = lv_obj_create(scr);
+	lv_obj_set_size(combined_panel, SCR_W, 180);
+	lv_obj_set_pos(combined_panel, 0, 41);
+	lv_obj_set_style_pad_all(combined_panel, 0, 0);
+	lv_obj_set_style_border_width(combined_panel, 0, 0);
+	lv_obj_set_style_radius(combined_panel, 0, 0);
+	lv_obj_set_style_bg_color(combined_panel, COL_BG, 0);
+	lv_obj_set_style_bg_opa(combined_panel, LV_OPA_COVER, 0);
+	lv_obj_clear_flag(combined_panel, LV_OBJ_FLAG_SCROLLABLE);
+	lv_obj_clear_flag(combined_panel, LV_OBJ_FLAG_CLICKABLE);
+	lv_obj_add_flag(combined_panel, LV_OBJ_FLAG_GESTURE_BUBBLE);
+	lv_obj_add_flag(combined_panel, LV_OBJ_FLAG_HIDDEN);
+
+	for (int i = 0; i < RAIL_PAGES_MAX; i++) {
+		struct combined_row *r = &combined[i];
+		lv_obj_t *card = lv_obj_create(combined_panel);
+
+		lv_obj_set_size(card, 304, 84);
+		lv_obj_set_pos(card, 8, i * 90);
+		lv_obj_set_style_pad_all(card, 0, 0);
+		lv_obj_set_style_border_width(card, 0, 0);
+		lv_obj_set_style_radius(card, 8, 0);
+		lv_obj_set_style_bg_color(card, COL_PANEL, 0);
+		lv_obj_clear_flag(card, LV_OBJ_FLAG_SCROLLABLE);
+		lv_obj_clear_flag(card, LV_OBJ_FLAG_CLICKABLE);
+		lv_obj_add_flag(card, LV_OBJ_FLAG_GESTURE_BUBBLE);
+
+		r->name = combined_label(card, 10, 4, 170, COL_TEXT);
+		r->age = combined_label(card, 204, 4, 90, COL_DIM);
+		lv_obj_set_style_text_align(r->age, LV_TEXT_ALIGN_RIGHT, 0);
+		for (int j = 0; j < 2; j++) {
+			int x = j == 0 ? 10 : 164;
+			lv_obj_t *window = combined_label(card, x, 31, 34, COL_DIM);
+
+			lv_label_set_text(window, j == 0 ? "5h" : "7d");
+			r->pct[j] = combined_label(card, x + 43, 27, 89, COL_TEXT);
+			lv_obj_set_style_text_font(r->pct[j],
+						   &lv_font_montserrat_20, 0);
+			lv_obj_set_style_text_align(r->pct[j], LV_TEXT_ALIGN_RIGHT, 0);
+			r->bar[j] = lv_bar_create(card);
+			lv_obj_set_size(r->bar[j], 132, 5);
+			lv_obj_set_pos(r->bar[j], x, 55);
+			lv_bar_set_range(r->bar[j], 0, 100);
+			lv_obj_set_style_bg_color(r->bar[j], COL_TRACK, LV_PART_MAIN);
+			lv_obj_set_style_bg_color(r->bar[j], COL_GREEN,
+						  LV_PART_INDICATOR);
+			lv_obj_set_style_radius(r->bar[j], 3, LV_PART_MAIN);
+			lv_obj_set_style_radius(r->bar[j], 3,
+						LV_PART_INDICATOR);
+			lv_obj_clear_flag(r->bar[j], LV_OBJ_FLAG_CLICKABLE);
+			lv_obj_add_flag(r->bar[j], LV_OBJ_FLAG_GESTURE_BUBBLE);
+			r->detail[j] = combined_label(card, x, 65, 132, COL_DIM);
+		}
+	}
+}
+
 void usage_view_deinit(void)
 {
+	status_led_off();
 	/* Free the gauge screen so it never coexists with the setup screen --
 	 * with no PSRAM the LVGL heap cannot hold both. */
 	built = false;
@@ -620,6 +715,8 @@ void usage_view_deinit(void)
 	 * would otherwise write through a freed pointer between the delete and
 	 * the next init. */
 	provider_lbl = NULL;
+	combined_panel = NULL;
+	memset(combined, 0, sizeof(combined));
 	for (int i = 0; i < RAIL_PAGES_MAX; i++) {
 		rail_dot[i] = NULL;
 	}
@@ -858,22 +955,17 @@ void usage_view_init(void)
 
 	build_gauge(&session, scr, -GAUGE_CX, "SESSION 5h");
 	build_gauge(&weekly, scr, GAUGE_CX, "WEEKLY 7d");
+	build_combined(scr);
 
 
-	/* Edge affordances: without them nobody discovers the swipes (user
-	 * feedback 2026-07-16). Right chevron pulls in settings, left one
-	 * plays the boot clip. Labels don't catch input, so swipes starting
-	 * on them still reach the screen. */
+	/* Keep the settings tap target visible. The old left arrow replayed the
+	 * boot clip, which looked like a second navigation route on a screen
+	 * that now shows both providers at once. */
 	lv_obj_t *chev = lv_label_create(scr);
 
 	lv_label_set_text(chev, LV_SYMBOL_RIGHT);
 	lv_obj_set_style_text_color(chev, COL_GREY, 0);
 	lv_obj_align(chev, LV_ALIGN_RIGHT_MID, -3, 0);
-
-	chev = lv_label_create(scr);
-	lv_label_set_text(chev, LV_SYMBOL_LEFT);
-	lv_obj_set_style_text_color(chev, COL_GREY, 0);
-	lv_obj_align(chev, LV_ALIGN_LEFT_MID, 3, 0);
 
 #if HAVE_PER_MODEL
 	/* The peek card, hidden until a long press. Created before the
@@ -1097,6 +1189,70 @@ static void render_gauges(void)
 	refresh_provider1();	/* the name under the brand follows the page */
 }
 
+static void render_combined(void)
+{
+	if (!combined_panel) {
+		return;
+	}
+	if (page_count() < 2) {
+		lv_obj_add_flag(combined_panel, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_clear_flag(provider_lbl, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_clear_flag(age_lbl, LV_OBJ_FLAG_HIDDEN);
+		render_age();
+		return;
+	}
+
+	lv_obj_clear_flag(combined_panel, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_add_flag(provider_lbl, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_add_flag(age_lbl, LV_OBJ_FLAG_HIDDEN);
+	for (int i = 0; i < RAIL_PAGES_MAX; i++) {
+		struct combined_row *r = &combined[i];
+		struct page_data *p = &pg[i];
+		char buf[FMT_COUNTDOWN_MAX];
+		char name[sizeof(provider1_tag)];
+		double pct[2] = { p->s_pct, p->w_pct };
+		int32_t reset[2] = { p->s_in_s, p->w_in_s };
+
+		tag_cased(name, sizeof(name), page_tag(i));
+		lv_label_set_text(r->name, name);
+		if (p->age >= 600) {
+			fmt_age(p->age, buf, sizeof(buf));
+		} else if (p->stale) {
+			snprintf(buf, sizeof(buf), "old reading");
+		} else {
+			buf[0] = '\0';
+		}
+		lv_label_set_text(r->age, buf);
+		lv_obj_set_style_text_color(r->age,
+					    p->stale ? COL_AMBER : COL_DIM, 0);
+		for (int j = 0; j < 2; j++) {
+			if (!p->have || pct[j] < 0) {
+				lv_label_set_text(r->pct[j], "--%");
+				lv_bar_set_value(r->bar[j], 0, LV_ANIM_OFF);
+				lv_obj_set_style_text_color(r->pct[j], COL_DIM, 0);
+				lv_obj_set_style_bg_color(r->bar[j], COL_DIM,
+							  LV_PART_INDICATOR);
+			} else {
+				snprintf(buf, sizeof(buf), "%d%%", (int)pct_int(pct[j]));
+				lv_label_set_text(r->pct[j], buf);
+				lv_bar_set_value(r->bar[j], arc_value(pct[j]),
+						 LV_ANIM_OFF);
+				lv_obj_set_style_text_color(r->pct[j],
+							    severity(pct[j]), 0);
+				lv_obj_set_style_bg_color(r->bar[j],
+							  severity(pct[j]),
+							  LV_PART_INDICATOR);
+			}
+			if (j == 0 && reset[j] < 0 && p->burn > 0) {
+				fmt_burn(p->burn, buf, sizeof(buf));
+			} else {
+				fmt_countdown(reset[j], buf, sizeof(buf));
+			}
+			lv_label_set_text(r->detail[j], buf);
+		}
+	}
+}
+
 /*
  * Whether "the reading is old" is true of the page being SHOWN.
  *
@@ -1117,6 +1273,10 @@ static bool stale_here(void)
 {
 	if (page_count() < 2) {
 		return true;
+	}
+	/* The combined screen shows both readings, so either may be old. */
+	if (combined_panel) {
+		return pg[0].stale || pg[1].stale;
 	}
 	return pg[cur_page].stale;
 }
@@ -1194,6 +1354,16 @@ static void refresh_rail(void)
 	if (!rail_dot[0]) {
 		return;
 	}
+	refresh_status_led();
+	if (page_count() >= 2 && combined_panel) {
+		for (int i = 0; i < RAIL_PAGES_MAX; i++) {
+			lv_obj_add_flag(rail_dot[i], LV_OBJ_FLAG_HIDDEN);
+		}
+		refresh_provider1();
+		render_combined();
+		return;
+	}
+	render_combined();
 	/*
 	 * Settled means rail_b IS the current page, whatever moved cur_page.
 	 * Most of this file's callers change the page without going through a
@@ -1286,7 +1456,7 @@ bool usage_view_can_page(int delta)
 	int n = page_count();
 	int next = cur_page + delta;
 
-	return built && n >= 2 && next >= 0 && next < n;
+	return built && !combined_panel && n >= 2 && next >= 0 && next < n;
 }
 
 /*
@@ -2304,6 +2474,7 @@ void usage_view_set_provider1_stale(bool stale)
 {
 	pg[0].stale = stale;
 	if (built) {
+		render_combined();
 		refresh_dots();
 	}
 }
@@ -2322,6 +2493,7 @@ void usage_view_set_ages(int32_t p1_age_s, int32_t p2_age_s)
 	}
 	if (built) {
 		render_age();
+		render_combined();
 	}
 }
 
@@ -2336,6 +2508,7 @@ void usage_view_set_burn(double pph)
 	if (built && cur_page == 0) {
 		session.burn = pph;
 		render_countdown(&session);
+		render_combined();
 	}
 }
 
@@ -2346,6 +2519,9 @@ void usage_view_set_provider1(const char *tag)
 	 * not the ring position. */
 	snprintf(provider1_tag, sizeof(provider1_tag), "%s", tag ? tag : "");
 	refresh_provider1();
+	if (built) {
+		render_combined();
+	}
 }
 
 void usage_view_set_provider2(const char *tag, double session_pct,
@@ -2455,6 +2631,7 @@ void usage_view_set_status(enum usage_status status)
 	}
 	last_status = status;
 	data_health = status;
+	refresh_status_led();
 
 	lv_color_t tc = COL_DIM;
 	const char *text;

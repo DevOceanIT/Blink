@@ -30,6 +30,7 @@ target_sources(app PRIVATE
 	src/ui_slide.c
 	src/ui_swipe.c
 	src/backlight.c
+	src/status_led.c
 	src/ota_parse.c
 	src/ota.c
 	src/ui_touchfx.c
@@ -54,4 +55,3 @@ target_sources_ifdef(CONFIG_BLINK_WIFI_MODE app PRIVATE
 
 # Diagnostic only; CONFIG_BLINK_TOUCH_TRACE is off in release builds.
 target_sources_ifdef(CONFIG_BLINK_TOUCH_TRACE app PRIVATE src/touch_trace.c)
-

@@ -352,100 +352,45 @@ freshest) rather than blending. What a genuinely two-provider panel should look
 like is a hardware design question, not one the normalizer may answer by
 averaging.
 
-## 4b. Two providers, two pages
+## 4b. Two providers, one screen
 
-**One provider per page.** The gauges show one provider's numbers at a time,
-and a vertical swipe or a tap moves between them.
+Claude and Codex each have a row. Every row shows its own five-hour and
+seven-day percentage, reset countdown, and reading age. A percentage that is
+not available stays `--%`; it never becomes a reassuring green zero. The
+highest valid percentage among all four windows also controls the rear RGB LED:
+green below 60%, yellow at 60-74%, orange at 75-89%, and red at 90% or more.
+The LED is off when no usable reading is available or the host disconnects.
 
-The first version put both on one pair of gauges: a second, inner ring per
-gauge, with a coloured ball at each arc's tip saying whose it was. It worked
-and it was still wrong. Two rings inside a 120 px circle leaves the hollow too
-small for the two percentages that belong in it, identity had to be carried by
-a fingernail-sized dot, and each countdown had to be labelled with a provider
-name -- so the panel spent a colour channel, a dot and two words answering
-"whose is this" on every element, continuously, for a question that has one
-answer at a time.
+The first design put both providers in nested rings. That made the percentages
+and provider identities hard to read on a 320 x 240 panel. The second design
+put each provider on a separate page; on the physical display, switching pages
+hid the other provider and made the session-status pips look like page marks.
+Two labelled rows keep both accounts visible without asking for a gesture.
+Swipe down for settings; the right-edge chevron remains a tap shortcut. The
+left-edge boot-animation shortcut has been removed.
 
-A page answers it once. The provider's name sits at the bottom, the rings are
-free to be rings, and the severity ramp -- green under 60%, amber to 90%, red
-beyond -- is the only thing colour has to mean.
-
-### Saying which page you are on, and getting to the other one
-
-Three things, and each does one job:
-
-- **The rail**, two marks along the bottom edge, position carried by WIDTH so
-  colour stays free. Each mark is coloured by ITS OWN page's severity, which
-  buys back the one thing splitting the providers cost: with both on one gauge
-  you could see the second one going red without looking for it.
-- **The pill**, naming the provider you are looking at. It is also the button
-  that changes it -- the value IS the control, which is the idiom the settings
-  panel's old "Main source" row used before pages replaced it. The fill only
-  appears when there is a second page, because a control that looks live and
-  answers nothing is worse than a label.
-- **The gesture**, up or down. At the end of the stack either direction goes
-  the only way it can, so with two pages both work. "Which direction is
-  forwards" is a question a two-item stack does not have, and the ask was for
-  a swipe that switches, not one that advances an ordered list.
-
-The tap path is not a convenience. See §4d -- the panel is genuinely bad at
-swipes, and left/right only ever felt reliable because a chevron sat behind
-each one.
-
-### The page change is the needle moving
-
-Not a transition between two pictures. Three of those were tried -- a cut, a
-wipe, and a wipe with a travelling edge -- and all three read wrong for the
-same reason: the two pages are one layout with different numbers in it, so the
-boundary between them has almost nothing to be made of.
-
-This is an instrument, so the rings travel from the reading they were showing
-to the other provider's, and the number under each counts along. Nothing is
-covered or revealed.
-
-What travels and what does not is decided by whether a midpoint exists:
-
-| | |
-|---|---|
-| percentages | **travel** — a value between two values is a real value |
-| severity colour | follows the value, so it changes at the threshold — blending green to amber goes through olive, which means nothing |
-| provider name, countdowns | **cross the middle** — there is no midpoint between "Claude" and "Codex", and rolling `6d 22h` toward `4d 15h` invents a duration true of nothing |
-| a blank reading (`--%`) | jumps — there is no path between a number and the absence of one |
-| the rail | leads, then finishes under its own power (§4d) |
-
-It is also the only motion this hardware renders smoothly, which is not a
-coincidence: a full-screen transition costs one whole repaint however finely
-it is chopped, while the arcs and their labels are a fraction of the panel and
-LVGL invalidates only what moved.
-
-### Beyond two
-
-`select_pair()` drops the third rather than rotating through them, and
-`RAIL_PAGES_MAX` is 2. A ring that silently changes whose number it is showing
-is worse than one that never shows it.
-
-## 4c. Freshness is per page
+## 4c. Freshness is per provider
 
 `stale` on the wire describes the FIRST provider. `p2_stale` describes the
-second. Each page carries its own age and the "Reading is old" warning appears
-only on a page it is true of.
+second. Each row carries its own age and the "Reading is old" warning appears
+only beside the provider it is true of.
 
 One flag for both was a real bug, reported 2026-08-28. A machine that runs
-Claude Code all day and touched Codex once that morning has a stale codex
-reading and a live claude one -- and the claude page announced that its numbers
-were old while they updated in front of the user. Exactly the frozen-meter
-misreading the flag exists to prevent, pointed at the wrong page.
+Claude Code all day and touched Codex once that morning has a stale Codex
+reading and a live Claude one. The old page layout could put the age warning
+over fresh numbers. Separate row ages now make the source of an old reading
+explicit.
 
 The mirror case was there too and is fixed with it: a fresh first provider
-beside a stale second one left the status unarmed entirely, so the second page
-claimed to be current. The board raises the status if EITHER page is old and
-decides per page where to show it, which means `proto.c` sets it after BOTH
+beside a stale second one left the status unarmed entirely. The board raises
+the status if either provider is old and marks the corresponding row. That
+means `proto.c` sets it after both
 providers are parsed -- and still after `usage_view_update()` and
 `set_models()`, which set OK internally and would overwrite it.
 
 Both directions stay compatible. An older daemon sends no `p2_stale`, which
 reads as fresh: the reading it sent IS the latest one it has, and the
-alternative is a page permanently labelled old by a missing key. An older board
+alternative is a row permanently labelled old by a missing key. An older board
 ignores a key it does not know. `p2_stale` rides with the rest of `p2`, so a
 board is never given an age for a page it has not been told exists.
 
