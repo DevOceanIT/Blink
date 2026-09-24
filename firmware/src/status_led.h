@@ -9,6 +9,7 @@ enum status_led_band {
 	STATUS_LED_YELLOW,
 	STATUS_LED_ORANGE,
 	STATUS_LED_RED,
+	STATUS_LED_RED_PULSE,
 };
 
 /* Pure policy so the boundaries, missing readings, and two-provider maximum
@@ -32,7 +33,10 @@ static inline enum status_led_band status_led_band_for(double p1_session,
 	if (worst < 0.0) {
 		return STATUS_LED_OFF;
 	}
-	if (worst >= 90.0) {
+	if (worst >= 92.0) {
+		return STATUS_LED_RED_PULSE;
+	}
+	if (worst >= 85.0) {
 		return STATUS_LED_RED;
 	}
 	if (worst >= 75.0) {
@@ -42,6 +46,14 @@ static inline enum status_led_band status_led_band_for(double p1_session,
 		return STATUS_LED_YELLOW;
 	}
 	return STATUS_LED_GREEN;
+}
+
+/* Smooth triangular pulse, 640 ms per cycle, never completely dark. */
+static inline unsigned int status_led_pulse_percent(unsigned int phase_ms)
+{
+	unsigned int phase = phase_ms % 640U;
+	unsigned int ramp = phase < 320U ? phase : 640U - phase;
+	return 10U + 90U * ramp / 320U;
 }
 
 /* Rear CYD RGB LED: the most-used available window across both providers.

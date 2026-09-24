@@ -358,7 +358,7 @@ Claude and Codex each have a row. Every row shows its own five-hour and
 seven-day percentage, reset countdown, and reading age. A percentage that is
 not available stays `--%`; it never becomes a reassuring green zero. The
 highest valid percentage among all four windows also controls the rear RGB LED:
-green below 60%, yellow at 60-74%, orange at 75-89%, and red at 90% or more.
+green below 60%, yellow at 60-74%, orange at 75-84%, solid red at 85-91%, and a fast red pulse at 92% or more.
 The LED is off when no usable reading is available or the host disconnects.
 
 The first design put both providers in nested rings. That made the percentages
@@ -671,3 +671,29 @@ update" rather than in milliseconds.
 
 Nothing else changes — not the normalizer, not the protocol, not the firmware.
 That is the property the whole structure exists to have.
+
+## Combined display: rates and resets
+
+The custom two-row display gives each provider the same layout: name and
+session usage rate at the top, then 5h and 7d percentages, bars and separate
+reset countdowns. `Reset --` means no exact reset was supplied; a rate never
+occupies that countdown slot. Rates are percentage points per hour, not
+requests or tokens per hour.
+
+The firmware measures each provider's session rate from source observations
+in the last hour. It needs at least three observations spanning ten minutes,
+spaced at least a minute apart. Repeated USB heartbeats do not add samples.
+A falling percentage, changed reset boundary, or gap over 1,000 seconds
+starts a new series. Stale rates are unavailable, not zero. Until the local
+series is ready, an available upstream session rate can fill the same field.
+History is in RAM and starts over after a board reboot. No extra protocol
+fields or model requests are required. Host checks live in
+`tests/usage_rate/host_test.c`.
+
+On the development Mac, Claude Desktop's history was observed writing at
+15-minute intervals. Its expected Local Storage usage record was absent.
+The native app holds exact reset data in memory, but its history file only
+publishes percentages. The bridge's two-second change check cannot refresh
+that upstream file. An exact Claude countdown remains dependent on a source
+that publishes it (for example, a naturally updated Claude Code status line).
+Do not infer a five-hour reset by adding five hours to the latest sample.

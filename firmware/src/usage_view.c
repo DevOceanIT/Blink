@@ -15,6 +15,7 @@
 #include "usage_state.h"
 #include "cfg_store.h"
 #include "status_led.h"
+#include "usage_rate.h"
 
 /* Severity colours: green under 60%, amber approaching, red near the limit. */
 #define COL_BG		lv_color_hex(0x0E1116)
@@ -218,10 +219,12 @@ struct page_data {
 };
 static struct page_data pg[RAIL_PAGES_MAX];
 static int cur_page;
+static struct usage_rate rates[RAIL_PAGES_MAX];
 static lv_obj_t *rail_dot[RAIL_PAGES_MAX];
 
 /* Two providers share one screen. Each row keeps its own windows and age. */
 struct combined_row {
+	lv_obj_t *rate;
 	lv_obj_t *name;
 	lv_obj_t *age;
 	lv_obj_t *pct[2];
@@ -673,7 +676,8 @@ static void build_combined(lv_obj_t *scr)
 		lv_obj_clear_flag(card, LV_OBJ_FLAG_CLICKABLE);
 		lv_obj_add_flag(card, LV_OBJ_FLAG_GESTURE_BUBBLE);
 
-		r->name = combined_label(card, 10, 4, 170, COL_TEXT);
+		r->name = combined_label(card, 10, 4, 85, COL_TEXT);
+		r->rate = combined_label(card, 95, 4, 108, COL_DIM);
 		r->age = combined_label(card, 204, 4, 90, COL_DIM);
 		lv_obj_set_style_text_align(r->age, LV_TEXT_ALIGN_RIGHT, 0);
 		for (int j = 0; j < 2; j++) {
@@ -1215,6 +1219,16 @@ static void render_combined(void)
 
 		tag_cased(name, sizeof(name), page_tag(i));
 		lv_label_set_text(r->name, name);
+		double rate = usage_rate_get(&rates[i], k_uptime_get() / 1000);
+		if (!p->stale && rate < 0 && p->burn > 0) rate = p->burn;
+		if (p->stale || rate < 0) {
+			snprintf(buf, sizeof(buf), "Rate --/h");
+		} else if (rate == 0) {
+			snprintf(buf, sizeof(buf), "+0.0%%/h");
+		} else {
+			fmt_burn(rate, buf, sizeof(buf));
+		}
+		lv_label_set_text(r->rate, buf);
 		if (p->age >= 600) {
 			fmt_age(p->age, buf, sizeof(buf));
 		} else if (p->stale) {
@@ -1243,12 +1257,11 @@ static void render_combined(void)
 							  severity(pct[j]),
 							  LV_PART_INDICATOR);
 			}
-			if (j == 0 && reset[j] < 0 && p->burn > 0) {
-				fmt_burn(p->burn, buf, sizeof(buf));
-			} else {
-				fmt_countdown(reset[j], buf, sizeof(buf));
-			}
-			lv_label_set_text(r->detail[j], buf);
+			char duration[FMT_COUNTDOWN_MAX];
+			fmt_countdown(reset[j], duration, sizeof(duration));
+			char detail[FMT_COUNTDOWN_MAX + 8];
+			snprintf(detail, sizeof(detail), "Reset %s", duration);
+			lv_label_set_text(r->detail[j], detail);
 		}
 	}
 }
@@ -2491,6 +2504,11 @@ void usage_view_set_ages(int32_t p1_age_s, int32_t p2_age_s)
 	if (RAIL_PAGES_MAX > 1) {
 		pg[1].age = p2_age_s;
 	}
+	for (int i = 0; i < RAIL_PAGES_MAX; ++i) {
+		if (pg[i].have && !pg[i].stale)
+			usage_rate_add(&rates[i], k_uptime_get() / 1000,
+				       pg[i].age, pg[i].s_pct, pg[i].s_in_s);
+	}
 	if (built) {
 		render_age();
 		render_combined();
@@ -2517,6 +2535,8 @@ void usage_view_set_provider1(const char *tag)
 	/* The outer ring is whichever provider the daemon made primary, which
 	 * on a codex-only machine is codex -- so the colour follows the NAME,
 	 * not the ring position. */
+	if (strcmp(provider1_tag, tag ? tag : "") != 0)
+		memset(&rates[0], 0, sizeof(rates[0]));
 	snprintf(provider1_tag, sizeof(provider1_tag), "%s", tag ? tag : "");
 	refresh_provider1();
 	if (built) {
@@ -2531,6 +2551,8 @@ void usage_view_set_provider2(const char *tag, double session_pct,
 	if (!built) {
 		return;
 	}
+	if (strcmp(provider2_tag, tag ? tag : "") != 0)
+		memset(&rates[1], 0, sizeof(rates[1]));
 	if (!tag || !tag[0]) {
 		/*
 		 * No second provider. The page goes away entirely rather than
