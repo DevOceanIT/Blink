@@ -8,6 +8,7 @@ zephyr_include_directories(src)
 
 target_sources(app PRIVATE
 	src/main.c
+	src/fatal.c
 	src/proto.c
 	src/msg_parse.c
 	src/usage_view.c
