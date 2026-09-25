@@ -2813,6 +2813,132 @@ def cmd_provision(args) -> int:
     return rc
 
 
+def cmd_pair(args) -> int:
+    """Pair a WiFi-capable board with this Mac's local usage feed."""
+    import ipaddress
+    import serial
+    from claude_usage_bridge import autodetect_port
+    from pc import local_feed, service_ctl
+
+    try:
+        host = str(ipaddress.IPv4Address(args.host))
+        message = local_feed.pairing_message(host, local_feed.PORT, bytes(32))
+    except ValueError as e:
+        print(f"Invalid local feed settings: {e}", file=sys.stderr)
+        return 2
+    del message  # validate without retaining a placeholder key
+
+    port = args.serial_port or autodetect_port()
+    if not port:
+        print("No board found. Plug one in, or pass --serial-port.",
+              file=sys.stderr)
+        return 1
+
+    key_path = os.path.join(blink_home(), "feed.key")
+    try:
+        os.makedirs(blink_home(), mode=0o700, exist_ok=True)
+    except OSError:
+        print("Could not prepare the private pairing-key folder.",
+              file=sys.stderr)
+        return 1
+    had_key = os.path.lexists(key_path)
+
+    stopped = service_ctl.stop_service()
+    if not stopped.ok and not stopped.skipped:
+        print(f"Could not stop the Blink service: {stopped.detail}",
+              file=sys.stderr)
+        return 1
+    restore = stopped.ok and not stopped.skipped
+
+    key = None
+    paired = False
+    pair_sent = False
+    ser = None
+    result = 1
+    restore_failed = False
+    try:
+        key = (local_feed.read_key(key_path) if had_key else
+               local_feed.create_key_file(key_path))
+        ser = serial.Serial(port, args.baud, timeout=0.2, write_timeout=1)
+        # A plain open preserves the CH340's harmless default DTR/RTS state.
+        # Pairing is an ordinary protocol exchange; it does not require reboot.
+        ser.reset_input_buffer()
+        welcome, why = protocol.encode_checked(
+            protocol.welcome("blink-bridge", RELEASE_VERSION))
+        if why:
+            raise ValueError("could not encode the board handshake")
+        ser.write(welcome)
+        ser.flush()
+
+        reader = protocol.LineReader()
+        deadline = time.monotonic() + 10.0
+        capable = False
+        while time.monotonic() < deadline:
+            for reply in reader.feed(ser.read(256)):
+                if reply.get("local_feed") is True:
+                    capable = True
+                if reply.get("t") == "hello":
+                    # Some boards have already booted before USB was opened;
+                    # the capability may instead ride the welcome reply.
+                    capable = capable or reply.get("local_feed") is True
+            if capable:
+                break
+        if not capable:
+            print("The board did not confirm local-feed firmware. No pairing"
+                  " command was sent.", file=sys.stderr)
+        else:
+            pair = local_feed.pairing_message(host, local_feed.PORT, key)
+            wire, why = protocol.encode_checked(pair)
+            if why:
+                raise ValueError(
+                    "pairing command exceeds the board protocol limit")
+            ser.write(wire)
+            pair_sent = True
+            ser.flush()
+            deadline = time.monotonic() + 5.0
+            while time.monotonic() < deadline:
+                for reply in reader.feed(ser.read(256)):
+                    if reply.get("t") == "feed_paired":
+                        paired = reply.get("ok") is True
+                        break
+                if paired:
+                    break
+            if not paired:
+                if pair_sent:
+                    print("The board did not confirm pairing. The saved key"
+                          " was retained; retry with the same host address.",
+                          file=sys.stderr)
+                else:
+                    print("The board did not confirm pairing. The temporary"
+                          " key was removed.", file=sys.stderr)
+            else:
+                print(f"Board paired with the local usage feed at {host}:"
+                      f"{local_feed.PORT}.")
+                result = 0
+    except Exception as e:
+        # Do not include any serial buffer or key material in diagnostics.
+        print(f"Pairing failed ({type(e).__name__}).", file=sys.stderr)
+        return 1
+    finally:
+        if ser is not None:
+            try:
+                ser.close()
+            except Exception:
+                pass
+        if not paired and key is not None and not had_key and not pair_sent:
+            try:
+                os.unlink(key_path)
+            except OSError:
+                pass
+        if restore:
+            outcome = service_ctl.start_service()
+            if not outcome.ok:
+                print(f"Could not restart the Blink service: {outcome.detail}",
+                      file=sys.stderr)
+                restore_failed = True
+    return 1 if restore_failed else result
+
+
 def cmd_run(args) -> int:
     """The daemon. This is what the login service starts.
 
@@ -2864,6 +2990,13 @@ def main(argv=None) -> int:
     prov_p.add_argument("--port", default=None,
                         help="Serial port (default: find the board)")
     prov_p.add_argument("--baud", type=int, default=115200)
+    pair_p = sub.add_parser(
+        "pair", help="Pair a WiFi board with this Mac's local usage feed")
+    pair_p.add_argument("--host", required=True,
+                        help="This Mac's LAN IPv4 address, reachable by the board")
+    pair_p.add_argument("--serial-port", default=None,
+                        help="Board serial port (default: find the board)")
+    pair_p.add_argument("--baud", type=int, default=115200)
     run_p = sub.add_parser("run", help="Run the bridge in the foreground")
     run_p.add_argument("--port", default=None,
                        help="Serial port (default: find the board)")
@@ -2883,6 +3016,7 @@ def main(argv=None) -> int:
         "update": cmd_update,
         "driver": cmd_driver,
         "provision": cmd_provision,
+        "pair": cmd_pair,
         "run": cmd_run,
     }[args.cmd](args)
 

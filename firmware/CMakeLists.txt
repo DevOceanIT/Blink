@@ -42,16 +42,24 @@ target_sources(app PRIVATE
 # CONFIG_BLINK_WIFI_MODE off these are never handed to the compiler, so the
 # OAuth client id, the spoofed User-Agent and the token writer are absent from
 # the image rather than merely unreachable in it. See firmware/Kconfig.
-target_sources_ifdef(CONFIG_BLINK_WIFI_MODE app PRIVATE
-	src/net_wifi.c
-	src/portal.c
-	src/ui_setup.c
-	src/dns_hijack.c
-	src/oauth.c
-	src/usage_parse.c
-	src/usage_client.c
-	src/tz_fetch.c
-)
+if(CONFIG_BLINK_WIFI_MODE)
+	target_sources(app PRIVATE
+		src/net_wifi.c
+		src/portal.c
+		src/ui_setup.c
+		src/dns_hijack.c
+	)
+	if(CONFIG_BLINK_LOCAL_FEED)
+		target_sources(app PRIVATE src/local_feed.c)
+	else()
+		target_sources(app PRIVATE
+			src/oauth.c
+			src/usage_parse.c
+			src/usage_client.c
+			src/tz_fetch.c
+		)
+	endif()
+endif()
 
 # Diagnostic only; CONFIG_BLINK_TOUCH_TRACE is off in release builds.
 target_sources_ifdef(CONFIG_BLINK_TOUCH_TRACE app PRIVATE src/touch_trace.c)

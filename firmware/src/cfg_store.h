@@ -17,6 +17,8 @@ enum cfg_mode {
 #define CFG_SSID_MAX 33		/* 32 + NUL */
 #define CFG_PSK_MAX 65		/* 64 + NUL */
 #define CFG_TOKEN_MAX 320	/* OAuth refresh tokens are long */
+#define CFG_FEED_HOST_MAX 16	/* IPv4 text + NUL */
+#define CFG_FEED_KEY_LEN 32
 
 int cfg_init(void);
 
@@ -44,6 +46,13 @@ int cfg_clear_token(void);
  * survives, so after re-provisioning the network the gauges come back without
  * another sign-in. */
 int cfg_clear_wifi(void);
+
+/* Host-fed WiFi mode. The pairing key is raw binary, never logged. */
+bool cfg_get_feed(char *host, size_t host_len, uint16_t *port,
+		  uint8_t key[CFG_FEED_KEY_LEN]);
+int cfg_pair_feed(const char *host, uint16_t port,
+		  const uint8_t key[CFG_FEED_KEY_LEN]);
+int cfg_clear_feed(void);
 
 #define CFG_AP_PSK_MAX 17	/* 16 + NUL; generated ones are 10 chars */
 

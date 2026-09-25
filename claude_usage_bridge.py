@@ -16,7 +16,7 @@ from serial.tools import list_ports
 
 from pc import ota as ota_mod
 from pc import (ingest, install_statusline, logbook, protocol,
-                statusline_source, update, win_driver)
+                local_feed, statusline_source, update, win_driver)
 from pc.version import RELEASE_VERSION
 from pc.bridge import Bridge
 
@@ -824,11 +824,28 @@ def main(argv=None):
     # bound method proxies attribute reads to the plain function underneath,
     # so `fetch = bus.poll` left every real desk unnamed while the tests --
     # which built their own fetch -- stayed green.
-    fetch = bus.fetch()
+    fetch = local_feed.LockedFetch(bus.fetch())
     # Resolved once, here, rather than read inside the loop: the interval is
     # a property of this run, and the read loop turns often enough that an
     # environment lookup per pass would be a strange place to spend time.
     poll_every = poll_interval()
+
+    # The WiFi paired-board feed is independent of USB discovery. Its key is
+    # installed by the one-time USB pairing flow; without that file there is
+    # no LAN listener and the ordinary USB bridge behaves as before.
+    feed_server = None
+    feed_key_path = os.path.join(blink_home, "feed.key")
+    try:
+        feed_key = local_feed.read_key(feed_key_path)
+        feed_server = local_feed.FeedServer(fetch, feed_key,
+                                            port=local_feed.PORT).start()
+        print(f"[feed] local usage endpoint listening on port "
+              f"{feed_server.address[1]}", file=sys.stderr)
+    except FileNotFoundError:
+        pass
+    except (OSError, ValueError) as e:
+        print(f"[feed] local usage endpoint unavailable: {e}",
+              file=sys.stderr)
 
     last_err = None
     explicit_port = bool(args.port)
@@ -1132,12 +1149,10 @@ def main(argv=None):
         # No reset means no boot `hello`, so nothing would trigger the
         # greeting -- see Bridge.greet.
         if already_running:
+            # Wait for the board's welcome reply before its OTA check. The
+            # reply also advertises whether this is custom WiFi firmware.
+            bridge._board_fw = known.get("fw")
             bridge.greet()
-            # No hello means the board never said which firmware it runs;
-            # the last one it told us is in board.json. This is the path an
-            # app update takes -- the board keeps running through it -- and
-            # the one that left boards on old firmware (2026-08-29).
-            bridge.offer_if_newer(known.get("fw"))
         next_poll = time.monotonic()
         next_fast_poll = time.monotonic()
         # The rollback copy is kept until a board has actually talked to this

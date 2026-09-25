@@ -58,6 +58,13 @@ Notes:
   stays in `src/`; add `-DEXTRA_CONF_FILE=wifi.conf` to build it back in. `tools/release.sh`
   refuses to publish an image that contains it, checking the artifact and not only the
   config.
+- **The Mac local-feed variant is separate from the shipped image.** Build with
+  `-DEXTRA_CONF_FILE="wifi.conf;local-feed.conf"`. Pair over USB with the host
+  `blink pair` command, then restart the board; it joins WiFi and polls the paired
+  Mac's authenticated local feed once a minute. This variant omits the on-board
+  provider OAuth and direct provider fetch clients. USB usage remains the startup
+  fallback when no pairing exists. HMAC authenticates the feed on the LAN; HTTP
+  does not encrypt the body.
 - **Sysbuild + MCUboot is required.** Flash encryption needs the MCUboot boot chain;
   a plain single-image build produces something the encrypted chip can't boot.
 - The board target is **`esp32_devkitc/esp32/procpu`** - there's no upstream CYD board,

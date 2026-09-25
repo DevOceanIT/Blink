@@ -52,6 +52,7 @@ class Bridge:
         # What the board says it is. Set from hello; None until it speaks.
         self._board_proto = None
         self._board_fw = None
+        self._local_feed_board = False
         self._announced_ahead = False
         # Pair updates. self_update replaces this program and does not return
         # when it works; pending remembers the consent across that restart;
@@ -114,6 +115,10 @@ class Bridge:
     # --- inbound ---
     def on_message(self, msg: dict):
         t = msg.get("t")
+        if msg.get("local_feed") is True:
+            # This firmware has its own paired LAN update path. The stock USB
+            # feed is USB-only and must never replace it with the wrong image.
+            self._local_feed_board = True
         # Learn the board's protocol version from ANY message, not just hello.
         #
         # _board_ahead() gates the one operation that can leave a customer
@@ -149,6 +154,11 @@ class Bridge:
             if self._set_preferred and isinstance(want, str):
                 if self._set_preferred(want):
                     print(f"[bridge] main source: {want}", file=sys.stderr)
+            # On a connection to an already-running board, this is the first
+            # reply to welcome. Wait for it before asking about USB firmware:
+            # paired WiFi firmware advertises local_feed on this same reply.
+            if self._board_fw and self._last_query_at is None:
+                self.offer_if_newer(self._board_fw)
             return
         if t == "hello":
             self._note_board(msg)
@@ -234,6 +244,10 @@ class Bridge:
         # a real release against a fabricated version.
         if cur and not self._board_fw:
             self._board_fw = cur
+        if self._local_feed_board:
+            self._manifest = None
+            self._write(protocol.ota_none())
+            return
         # Refuse to drive a board we may not understand. This daemon writes
         # slot0 in place, with no test boot behind it, so "probably fine" is
         # not a good enough basis for the one operation that can leave a

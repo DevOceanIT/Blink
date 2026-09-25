@@ -41,6 +41,27 @@ class TestBridge(unittest.TestCase):
         self.assertEqual(types, ["welcome", "time", "usage"])
         self.assertEqual(self.sent[2]["session_pct"], 61.0)
 
+    def test_local_feed_board_is_not_offered_usb_firmware(self):
+        manifests = []
+        b = Bridge(write_msg=self.sent.append,
+                   fetch_usage=lambda: protocol.usage(1.0, "R", 2.0, "R", []),
+                   fetch_manifest=lambda: manifests.append(1))
+        b.on_message({"t": "hello", "v": 1, "fw": "0.1.0",
+                      "local_feed": True})
+        self.assertEqual(manifests, [])
+        self.assertEqual(self.sent[-1]["t"], "ota_none")
+
+    def test_local_feed_marker_on_welcome_reply_gates_ota_check(self):
+        manifests = []
+        b = Bridge(write_msg=self.sent.append,
+                   fetch_usage=lambda: None,
+                   fetch_manifest=lambda: manifests.append(1))
+        b._board_fw = "0.1.0"
+        b.on_message({"t": "pref", "v": 1, "provider": "claude",
+                      "local_feed": True})
+        self.assertEqual(manifests, [])
+        self.assertEqual(self.sent[-1]["t"], "ota_none")
+
     def test_time_uses_injected_wall_clock(self):
         b = Bridge(write_msg=self.sent.append,
                    fetch_usage=lambda: protocol.usage(1.0, "R", 2.0, "R", []),

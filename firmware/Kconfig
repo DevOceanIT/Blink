@@ -35,6 +35,14 @@ config BLINK_WIFI_MODE
 
 	  wifi.conf sets this symbol, so that one flag is the whole switch.
 
+config BLINK_LOCAL_FEED
+	bool "Mac-hosted local usage feed"
+	depends on BLINK_WIFI_MODE
+	help
+	  Use board WiFi to fetch a signed local usage frame from the paired Mac.
+	  This variant omits the on-device provider OAuth and usage-fetch clients.
+	  Enable it with wifi.conf and local-feed.conf together.
+
 config BLINK_PANEL_PILOT
 	bool "Build for the two pilot (POC) display panels"
 	help

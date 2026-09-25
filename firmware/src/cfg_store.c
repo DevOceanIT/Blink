@@ -60,7 +60,32 @@ struct rec {
 	uint8_t main_src;		/* 0 unset -> claude; else enum cfg_main_src */
 	uint8_t edition;		/* 0 unset -> claude; else enum cfg_edition */
 	uint8_t edition_locked;		/* 1 once stamped; see cfg_set_edition */
+	uint8_t feed_paired;
+	uint16_t feed_port;
+	char feed_host[CFG_FEED_HOST_MAX];
+	uint8_t feed_key[CFG_FEED_KEY_LEN];
 	uint32_t crc;		/* over everything above, always last */
+} __packed;
+
+/* On-flash shape immediately before the local-feed fields were added. */
+struct rec_pre_feed {
+	uint32_t magic;
+	uint32_t seq;
+	uint8_t mode;
+	uint8_t weekly_sel;
+	uint8_t tz_set;
+	uint8_t bright_pct;
+	int32_t tz_min;
+	char ssid[CFG_SSID_MAX];
+	char psk[CFG_PSK_MAX];
+	char token[CFG_TOKEN_MAX];
+	char ap_psk[CFG_AP_PSK_MAX];
+	uint8_t ota_state;
+	char ota_target[CFG_OTA_VER_MAX];
+	uint8_t main_src;
+	uint8_t edition;
+	uint8_t edition_locked;
+	uint32_t crc;
 } __packed;
 
 /* The layout before the edition latch. Everything else is identical, so the
@@ -170,6 +195,33 @@ static bool slot_load(int off, struct rec *out)
 	}
 	memcpy(out, buf, sizeof(*out));
 	if (out->magic == REC_MAGIC && out->crc == rec_crc(out)) {
+		return true;
+	}
+
+	struct rec_pre_feed pf;
+	memcpy(&pf, buf, sizeof(pf));
+	if (pf.magic == REC_MAGIC &&
+	    pf.crc == crc32_ieee((const uint8_t *)&pf,
+				 offsetof(struct rec_pre_feed, crc))) {
+		memset(out, 0, sizeof(*out));
+		out->magic = pf.magic;
+		out->seq = pf.seq;
+		out->mode = pf.mode;
+		out->weekly_sel = pf.weekly_sel;
+		out->tz_set = pf.tz_set;
+		out->bright_pct = pf.bright_pct;
+		out->tz_min = pf.tz_min;
+		memcpy(out->ssid, pf.ssid, sizeof(out->ssid));
+		memcpy(out->psk, pf.psk, sizeof(out->psk));
+		memcpy(out->token, pf.token, sizeof(out->token));
+		memcpy(out->ap_psk, pf.ap_psk, sizeof(out->ap_psk));
+		out->ota_state = pf.ota_state;
+		memcpy(out->ota_target, pf.ota_target, sizeof(out->ota_target));
+		out->main_src = pf.main_src;
+		out->edition = pf.edition;
+		out->edition_locked = pf.edition_locked;
+		out->crc = rec_crc(out);
+		printk("[cfg] migrated pre-local-feed record (seq %u)\n", pf.seq);
 		return true;
 	}
 
@@ -465,6 +517,68 @@ int cfg_clear_wifi(void)
 
 	int rc = persist();
 
+	k_mutex_unlock(&cfg_lock);
+	return rc;
+}
+
+bool cfg_get_feed(char *host, size_t host_len, uint16_t *port,
+		  uint8_t key[CFG_FEED_KEY_LEN])
+{
+	if (!host || host_len == 0 || !port || !key) {
+		return false;
+	}
+	k_mutex_lock(&cfg_lock, K_FOREVER);
+	bool paired = cfg.feed_paired == 1 && cfg.feed_host[0] != '\0' &&
+		      cfg.feed_port != 0;
+	if (paired) {
+		strncpy(host, cfg.feed_host, host_len - 1);
+		host[host_len - 1] = '\0';
+		*port = cfg.feed_port;
+		memcpy(key, cfg.feed_key, CFG_FEED_KEY_LEN);
+	}
+	k_mutex_unlock(&cfg_lock);
+	return paired;
+}
+
+int cfg_pair_feed(const char *host, uint16_t port,
+		  const uint8_t key[CFG_FEED_KEY_LEN])
+{
+	if (!host || !host[0] || strlen(host) >= CFG_FEED_HOST_MAX ||
+	    port == 0 || !key) {
+		return -EINVAL;
+	}
+	k_mutex_lock(&cfg_lock, K_FOREVER);
+	if (cfg.feed_paired == 1) {
+		bool same = cfg.feed_port == port &&
+			    strcmp(cfg.feed_host, host) == 0 &&
+			    memcmp(cfg.feed_key, key, CFG_FEED_KEY_LEN) == 0;
+		k_mutex_unlock(&cfg_lock);
+		return same ? 0 : -EPERM;
+	}
+	strncpy(cfg.feed_host, host, sizeof(cfg.feed_host) - 1);
+	cfg.feed_host[sizeof(cfg.feed_host) - 1] = '\0';
+	cfg.feed_port = port;
+	memcpy(cfg.feed_key, key, CFG_FEED_KEY_LEN);
+	cfg.feed_paired = 1;
+	int rc = persist();
+	if (rc != 0) {
+		memset(cfg.feed_host, 0, sizeof(cfg.feed_host));
+		memset(cfg.feed_key, 0, sizeof(cfg.feed_key));
+		cfg.feed_port = 0;
+		cfg.feed_paired = 0;
+	}
+	k_mutex_unlock(&cfg_lock);
+	return rc;
+}
+
+int cfg_clear_feed(void)
+{
+	k_mutex_lock(&cfg_lock, K_FOREVER);
+	memset(cfg.feed_host, 0, sizeof(cfg.feed_host));
+	memset(cfg.feed_key, 0, sizeof(cfg.feed_key));
+	cfg.feed_port = 0;
+	cfg.feed_paired = 0;
+	int rc = persist();
 	k_mutex_unlock(&cfg_lock);
 	return rc;
 }

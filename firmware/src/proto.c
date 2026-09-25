@@ -6,6 +6,7 @@
 #include <zephyr/sys/ring_buffer.h>
 #include <stdio.h>
 #include <string.h>
+#include <errno.h>
 
 #include "proto.h"
 #include "msg_parse.h"
@@ -120,12 +121,18 @@ static void emit(const char *json)
 
 void proto_send_pref(void)
 {
-	char buf[64];
+	char buf[96];
 
 	snprintf(buf, sizeof(buf),
-		 "{\"t\":\"pref\",\"v\":%d,\"provider\":\"%s\"}",
+		 "{\"t\":\"pref\",\"v\":%d,\"provider\":\"%s\"%s}",
 		 PROTO_VERSION,
-		 cfg_get_main_src() == CFG_MAIN_SRC_CODEX ? "codex" : "claude");
+		 cfg_get_main_src() == CFG_MAIN_SRC_CODEX ? "codex" : "claude",
+#if IS_ENABLED(CONFIG_BLINK_LOCAL_FEED)
+		 ",\"local_feed\":true"
+#else
+		 ""
+#endif
+		 );
 	emit(buf);
 }
 
@@ -148,8 +155,14 @@ static void send_hello(void)
 	snprintf(buf, sizeof(buf),
 		 "{\"t\":\"hello\",\"v\":%d,\"board\":\"cyd\","
 		 "\"board_id\":\"%s\",\"fw\":\"" BLINK_FW_VERSION "\","
-		 "\"reset\":\"0x%x\"}",
-		 PROTO_VERSION, idhex, cause);
+		 "\"reset\":\"0x%x\"%s}",
+		 PROTO_VERSION, idhex, cause,
+#if IS_ENABLED(CONFIG_BLINK_LOCAL_FEED)
+		 ",\"local_feed\":true"
+#else
+		 ""
+#endif
+		 );
 	emit(buf);
 	/* Straight after hello: a daemon that starts later, or restarts, has
 	 * no other way to learn a preference the user set while it was gone. */
@@ -278,6 +291,60 @@ static void dispatch(const char *json)
 		 */
 		printk("[proto] host says bye\n");
 		host_bye = true;
+		return;
+	}
+	if (strcmp(type, "feed_pair") == 0) {
+#if IS_ENABLED(CONFIG_BLINK_LOCAL_FEED)
+		char host[CFG_FEED_HOST_MAX];
+		char key_hex[CFG_FEED_KEY_LEN * 2 + 1];
+		double port_num = 0;
+		uint8_t key[CFG_FEED_KEY_LEN];
+		bool valid = msg_get_str(json, "host", host, sizeof(host)) &&
+			     msg_get_str(json, "key_hex", key_hex,
+					 sizeof(key_hex)) &&
+			     msg_get_double(json, "port", &port_num) &&
+			     port_num >= 1 && port_num <= 65535 &&
+			     port_num == (double)(uint16_t)port_num;
+
+		/* A literal IPv4 address keeps the board independent of mDNS and
+		 * avoids putting a resolver or provider credential on this device. */
+		unsigned octets[4];
+		char tail;
+		if (!valid || sscanf(host, "%u.%u.%u.%u%c", &octets[0], &octets[1],
+				    &octets[2], &octets[3], &tail) != 4 ||
+		    octets[0] > 255 || octets[1] > 255 ||
+		    octets[2] > 255 || octets[3] > 255 ||
+		    !strchr(host, '.')) {
+			valid = false;
+		}
+		for (size_t i = 0; valid && i < CFG_FEED_KEY_LEN * 2; i++) {
+			char c = key_hex[i];
+			int nibble = c >= '0' && c <= '9' ? c - '0' :
+				     c >= 'a' && c <= 'f' ? c - 'a' + 10 : -1;
+			if (nibble < 0) {
+				valid = false;
+				break;
+			}
+			if ((i & 1) == 0) {
+				key[i / 2] = (uint8_t)(nibble << 4);
+			} else {
+				key[i / 2] |= (uint8_t)nibble;
+			}
+		}
+		if (valid && key_hex[CFG_FEED_KEY_LEN * 2] != '\0') {
+			valid = false;
+		}
+		int rc = valid ? cfg_pair_feed(host, (uint16_t)port_num, key) : -EINVAL;
+		memset(key, 0, sizeof(key));
+		if (rc == 0) {
+			emit("{\"t\":\"feed_paired\",\"ok\":true}");
+		} else {
+			/* Do not disclose which part of the credential was rejected. */
+			emit("{\"t\":\"feed_paired\",\"ok\":false}");
+		}
+#else
+		emit("{\"t\":\"feed_paired\",\"ok\":false}");
+#endif
 		return;
 	}
 	host_bye = false;

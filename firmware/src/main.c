@@ -21,15 +21,19 @@
 #include "portal.h"
 #include "ui_setup.h"
 #include "dns_hijack.h"
+#if !IS_ENABLED(CONFIG_BLINK_LOCAL_FEED)
 #include "oauth.h"
 #include "usage_client.h"
+#include "tz_fetch.h"
+#else
+#include "local_feed.h"
+#endif
 #include "ui_boot.h"
 #include "ui_sleep.h"
 #include "sleep_gate.h"
 #include "usage_freshness.h"
 #include "ui_settings.h"
 #include "ui_anim.h"
-#include "tz_fetch.h"
 #include "ota.h"
 #include "upd_tap.h"
 #include "whatsnew.h"
@@ -122,8 +126,10 @@ static void panel_fix_madctl(void)
  * "defined but not used" warnings and hid anything genuine among them.
  */
 /* Provisioning session state (one PKCE verifier per setup attempt). */
+#if !IS_ENABLED(CONFIG_BLINK_LOCAL_FEED)
 static char verifier[OAUTH_VERIFIER_LEN];
 static char authorize_url[OAUTH_URL_LEN];
+#endif
 
 /*
  * The setup AP's WPA2 password: random once, persisted, carried by the QR.
@@ -370,6 +376,7 @@ static void wifi_settle(void)
  * does one or the other. Lower priority than main (higher number): 1-2 s of
  * ECDHE math must not starve the render loop on this single-core build.
  */
+#if !IS_ENABLED(CONFIG_BLINK_LOCAL_FEED)
 #define NET_WORKER_PRIO 5
 
 /* Re-join backoff, doubling up to five minutes because a router that is
@@ -412,9 +419,11 @@ static void wifi_settle(void)
 
 static K_THREAD_STACK_DEFINE(net_stack, 8192);	/* TLS-sized, like main's */
 static struct k_thread net_thread;
+#endif
 
 /* ---- provisioning callbacks (portal owns HTTP, we own WiFi + OAuth) ---- */
 
+#if !IS_ENABLED(CONFIG_BLINK_LOCAL_FEED)
 /* Runs ON THE WORKER THREAD -- no LVGL calls. ui_setup_set_state() is safe
  * from here by design (volatile pending + apply on the LVGL thread), the
  * same contract the net-mgmt callbacks use. */
@@ -471,6 +480,7 @@ static int cb_sign_in_poll(void)
 {
 	return signin_result;
 }
+#endif
 
 /*
  * Phase 1: run the AP until credentials arrive, then tear it down and try to
@@ -583,6 +593,7 @@ static int phase1_get_wifi(char *ssid, size_t slen, char *psk, size_t plen,
 /* skip_join_reason: non-NULL when the caller already knows a join is doomed
  * (boot scan saw other networks but not ours) -- skip the 30 s attempt and
  * put that reason on the portal form instead. */
+#if !IS_ENABLED(CONFIG_BLINK_LOCAL_FEED)
 static void run_provisioning(const char *skip_join_reason)
 {
 	char ssid[CFG_SSID_MAX], psk[CFG_PSK_MAX];
@@ -669,6 +680,7 @@ out:
 	ui_boot_mark_intentional_reboot();
 	sys_reboot(SYS_REBOOT_COLD);
 }
+#endif
 
 /*
  * Is the stored network on the air? First live run of this gate was right
@@ -736,12 +748,19 @@ static enum ssid_scan boot_ssid_scan(const char *ssid)
  * crosses threads.
  */
 struct net_evt {
-	enum { NEV_STAGE, NEV_USAGE, NEV_STATUS, NEV_MODELS } kind;
+	enum { NEV_STAGE, NEV_USAGE, NEV_STATUS, NEV_MODELS,
+#if IS_ENABLED(CONFIG_BLINK_LOCAL_FEED)
+	       NEV_FEED,
+#endif
+	} kind;
 	int stage;				/* NEV_STAGE */
 	double s_pct, w_pct;			/* NEV_USAGE; NEV_MODELS reuses
 						 * s_pct as fable's weekly */
 	int32_t s_reset, w_reset;
 	enum usage_status status;		/* NEV_STATUS */
+#if IS_ENABLED(CONFIG_BLINK_LOCAL_FEED)
+	struct local_feed_usage feed;
+#endif
 };
 
 K_MSGQ_DEFINE(net_evtq, sizeof(struct net_evt), 8, 4);
@@ -750,8 +769,12 @@ K_MSGQ_DEFINE(net_evtq, sizeof(struct net_evt), 8, 4);
  * (user request 2026-07-16). */
 static const char *const wifi_boot_steps[] = {
 	"Join the WiFi",
+#if IS_ENABLED(CONFIG_BLINK_LOCAL_FEED)
+	"Fetch host usage",
+#else
 	"Sign in to Anthropic",
 	"Fetch first usage",
+#endif
 };
 
 static void apply_net_evt(const struct net_evt *e)
@@ -772,6 +795,40 @@ static void apply_net_evt(const struct net_evt *e)
 	case NEV_MODELS:
 		usage_view_set_models(e->s_pct);
 		break;
+#if IS_ENABLED(CONFIG_BLINK_LOCAL_FEED)
+	case NEV_FEED: {
+		const struct local_feed_usage *u = &e->feed;
+		enum usage_activity act = usage_activity_from_state(u->state);
+		bool p1_stale = u->stale || u->age_s >= 120;
+		bool p2_stale = u->p2_stale || u->p2_age_s >= 120;
+		ota_health = true;
+		usage_view_update(u->session_pct, u->session_resets_in_s,
+				  u->weekly_pct, u->weekly_resets_in_s);
+		usage_view_set_models(u->fable_pct);
+		if (u->provider[0]) {
+			usage_view_set_provider1(u->provider);
+		}
+		usage_view_set_provider1_stale(p1_stale);
+		usage_view_set_provider2(u->provider2, u->p2_session_pct,
+					 u->p2_weekly_pct,
+					 u->p2_session_resets_in_s,
+					 u->p2_weekly_resets_in_s, p2_stale);
+		usage_view_set_activity(act);
+		usage_view_set_session(u->label, u->label_count);
+		usage_view_set_sessions(u->n_sess, u->n_agents);
+		usage_view_set_counts(u->n_sess, u->n_run, u->n_wait, u->n_stuck);
+		usage_view_set_burn(u->burn_pph);
+		usage_view_set_ages(u->age_s, u->p2_age_s);
+		usage_freshness_note(u->age_s, u->active_age_s, act,
+				     k_uptime_get());
+		if (p1_stale || p2_stale) {
+			usage_view_set_status(USAGE_STATUS_STALE);
+		} else {
+			usage_view_set_status(USAGE_STATUS_OK);
+		}
+		break;
+	}
+#endif
 	}
 }
 
@@ -795,6 +852,129 @@ static void standalone_anim_pump(void)
 	ota_boot_pump();
 }
 
+#if IS_ENABLED(CONFIG_BLINK_LOCAL_FEED)
+static char feed_host[CFG_FEED_HOST_MAX];
+static uint16_t feed_port;
+static uint8_t feed_key[CFG_FEED_KEY_LEN];
+static char feed_ssid[CFG_SSID_MAX];
+static char feed_psk[CFG_PSK_MAX];
+static K_THREAD_STACK_DEFINE(feed_stack, 4096);
+static struct k_thread feed_thread;
+#define FEED_WORKER_PRIO 5
+
+static void feed_post_status(enum usage_status status)
+{
+	struct net_evt e = { .kind = NEV_STATUS, .status = status };
+	k_msgq_put(&net_evtq, &e, K_NO_WAIT);
+}
+
+static void local_feed_worker(void *a, void *b, void *c)
+{
+	ARG_UNUSED(a); ARG_UNUSED(b); ARG_UNUSED(c);
+	int64_t next_poll = 0;
+	int64_t next_join = 0;
+	int join_wait = 15 * 1000;
+	bool had_usage = false;
+
+	for (;;) {
+		int64_t now = k_uptime_get();
+		if (!net_wifi_has_ip()) {
+			feed_post_status(had_usage ? USAGE_STATUS_STALE :
+					 USAGE_STATUS_ERROR);
+			if (now >= next_join) {
+				net_wifi_set_idle_hook(NULL);
+				int rc = net_wifi_connect(feed_ssid, feed_psk, 30);
+				net_wifi_set_idle_hook(wifi_idle);
+				if (rc == 0) {
+					join_wait = 15 * 1000;
+					next_join = 0;
+					next_poll = 0;
+				} else {
+					join_wait = MIN(join_wait * 2, 5 * 60 * 1000);
+					next_join = k_uptime_get() + join_wait;
+				}
+			}
+			k_sleep(K_MSEC(500));
+			continue;
+		}
+		if (now >= next_poll) {
+			if (!net_time_valid()) {
+				net_time_sync(10);
+			}
+			struct local_feed_usage u;
+			int rc = local_feed_fetch(feed_host, feed_port, feed_key, &u);
+			if (rc == 0) {
+				struct net_evt e = {
+					.kind = NEV_FEED,
+					.feed = u,
+				};
+				k_msgq_put(&net_evtq, &e, K_NO_WAIT);
+				had_usage = true;
+			} else {
+				feed_post_status(had_usage ? USAGE_STATUS_STALE :
+						 USAGE_STATUS_ERROR);
+			}
+			next_poll = k_uptime_get() + 60 * 1000;
+		}
+		k_sleep(K_MSEC(250));
+	}
+}
+
+static void run_local_feed(void)
+{
+	if (!cfg_get_feed(feed_host, sizeof(feed_host), &feed_port, feed_key)) {
+		return;
+	}
+	if (!cfg_get_wifi(feed_ssid, sizeof(feed_ssid), feed_psk,
+			  sizeof(feed_psk))) {
+		ui_setup_show();
+		pump_ui();
+		ui_boot_teardown();
+		phase1_get_wifi(feed_ssid, sizeof(feed_ssid), feed_psk,
+				sizeof(feed_psk), NULL);
+		return;
+	}
+	wifi_settle();
+	if (net_wifi_connect(feed_ssid, feed_psk, 30) != 0) {
+		const char *reason = net_wifi_last_error();
+		cfg_clear_wifi();
+		ui_setup_show();
+		pump_ui();
+		ui_boot_teardown();
+		phase1_get_wifi(feed_ssid, sizeof(feed_ssid), feed_psk,
+				sizeof(feed_psk), reason);
+		return;
+	}
+	usage_view_boot_stage(1);
+	k_thread_create(&feed_thread, feed_stack, K_THREAD_STACK_SIZEOF(feed_stack),
+			local_feed_worker, NULL, NULL, NULL,
+			FEED_WORKER_PRIO, 0, K_NO_WAIT);
+	int64_t last_tick = k_uptime_get();
+	ui_settings_drop_pending();
+	for (;;) {
+		struct net_evt e;
+		while (k_msgq_get(&net_evtq, &e, K_NO_WAIT) == 0) {
+			apply_net_evt(&e);
+		}
+		ota_boot_pump();
+		if (ui_anim_pending()) {
+			ui_anim_run(standalone_anim_pump);
+		}
+		ui_settings_service(standalone_anim_pump);
+		int64_t now = k_uptime_get();
+		if (now - last_tick >= 1000) {
+			usage_view_tick_1s();
+			last_tick = now;
+			int hh = -1, mm = 0;
+			net_time_local(&hh, &mm);
+			usage_view_set_clock(hh, mm);
+		}
+		lv_timer_handler();
+		k_sleep(K_MSEC(10));
+	}
+}
+#endif
+
 #endif /* CONFIG_BLINK_WIFI_MODE */
 
 /* Outside the gate: this is the tethered path's own step list, and it was
@@ -813,7 +993,7 @@ static void usb_anim_pump(void)
 	ota_boot_pump();
 }
 
-#if IS_ENABLED(CONFIG_BLINK_WIFI_MODE)
+#if IS_ENABLED(CONFIG_BLINK_WIFI_MODE) && !IS_ENABLED(CONFIG_BLINK_LOCAL_FEED)
 /* Lower priority than main (higher number): 1-2 s of ECDHE math must not
  * starve the render loop on this single-core build. */
 static char worker_refresh[CFG_TOKEN_MAX];
@@ -1437,7 +1617,7 @@ static void run_standalone(void)
 	}
 }
 
-#endif /* CONFIG_BLINK_WIFI_MODE */
+#endif /* legacy standalone CONFIG_BLINK_WIFI_MODE */
 
 /* ---- USB bridge mode: PC daemon pushes usage over serial ---- */
 
@@ -1760,6 +1940,14 @@ int main(void)
 	ui_touchfx_init();	/* light touch-echo feedback on every press */
 
 	cfg_init();
+#if IS_ENABLED(CONFIG_BLINK_LOCAL_FEED)
+	{
+		int32_t tz_min;
+		if (cfg_get_tz(&tz_min)) {
+			net_time_set_offset(tz_min);
+		}
+	}
+#endif
 	ota_boot_begin();	/* unconfirmed image? start the confirm clock */
 	/* ...and from here the boot screen's own wait loops feed it too; they
 	 * block for seconds against a 30 s window. */
@@ -1770,6 +1958,19 @@ int main(void)
 	net_wifi_init();
 	net_wifi_set_idle_hook(wifi_idle);
 	ap_psk_setup();		/* before any QR or AP use */
+#if IS_ENABLED(CONFIG_BLINK_LOCAL_FEED)
+	/* This image has no provider auth client. Remove a refresh token left by
+	 * an earlier standalone image so the paired build carries no provider
+	 * credential forward on the device. */
+	{
+		char tok[CFG_TOKEN_MAX];
+		if (cfg_get_token(tok, sizeof(tok))) {
+			memset(tok, 0, sizeof(tok));
+			cfg_clear_token();
+			printk("[usage] cleared a provider token; local feed uses Mac only\n");
+		}
+	}
+#endif
 #else
 	/* Nothing in this build can use a refresh token -- the OAuth code is
 	 * not compiled in. But a unit flashed with a WiFi build still has one
@@ -1812,6 +2013,7 @@ int main(void)
 	 * never loses the board to this shortcut: the daemon opening the
 	 * port is a hard reset, which clears the intentional mark. */
 #if IS_ENABLED(CONFIG_BLINK_WIFI_MODE)
+#if !IS_ENABLED(CONFIG_BLINK_LOCAL_FEED)
 	if (ui_boot_intentional_pending()) {
 		char ssid[CFG_SSID_MAX], psk[CFG_PSK_MAX], tok[CFG_TOKEN_MAX];
 
@@ -1821,6 +2023,7 @@ int main(void)
 			run_provisioning(NULL);	/* reboots when done */
 		}
 	}
+#endif
 #endif
 
 	ui_boot_splash();
@@ -1847,6 +2050,33 @@ int main(void)
 	}
 
 #if IS_ENABLED(CONFIG_BLINK_WIFI_MODE)
+#if IS_ENABLED(CONFIG_BLINK_LOCAL_FEED)
+	char feed_host_boot[CFG_FEED_HOST_MAX];
+	uint16_t feed_port_boot;
+	uint8_t feed_key_boot[CFG_FEED_KEY_LEN];
+	if (cfg_get_feed(feed_host_boot, sizeof(feed_host_boot), &feed_port_boot,
+			 feed_key_boot)) {
+		memset(feed_key_boot, 0, sizeof(feed_key_boot));
+		usage_view_init();
+		usage_view_boot_begin(wifi_boot_steps, 2);
+		lv_timer_handler();
+		ui_boot_teardown();
+		ui_settings_attach(lv_scr_act());
+		ota_report_outcome();
+		usage_view_set_status(USAGE_STATUS_DISCONNECTED);
+		printk("[usage] mode: local Mac feed\n");
+		run_local_feed();
+	}
+	printk("[usage] no Mac feed pairing; mode: USB bridge\n");
+	usage_view_init();
+	usage_view_boot_begin(usb_boot_steps, 2);
+	lv_timer_handler();
+	ui_boot_teardown();
+	ui_settings_attach(lv_scr_act());
+	ota_report_outcome();
+	usage_view_set_status(USAGE_STATUS_DISCONNECTED);
+	run_usb();
+#else
 	char tok[CFG_TOKEN_MAX], ssid[CFG_SSID_MAX], psk[CFG_PSK_MAX];
 	bool have_wifi = cfg_get_wifi(ssid, sizeof(ssid), psk, sizeof(psk));
 	bool have_tok = cfg_get_token(tok, sizeof(tok));
@@ -1889,6 +2119,7 @@ int main(void)
 
 	printk("[usage] mode: provisioning\n");
 	run_provisioning(NULL);	/* reboots when done */
+#endif
 #else
 	/*
 	 * No radio in this build, so there is nothing to fall through TO. The
