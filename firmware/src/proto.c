@@ -273,6 +273,53 @@ bool proto_ota_install(void)
 	return true;
 }
 
+/*
+ * Dotted-quad parse, by hand, because scanf cannot be called from here.
+ *
+ * This was `sscanf(host, "%u.%u.%u.%u%c", ...)` and it did not merely fail --
+ * it took the board down. picolibc's vfscanf needs far more stack than
+ * dispatch() has on the main thread, and the overflow faulted inside ROM
+ * (VERIFIED on hardware 2026-09-26: EXCCAUSE at PC 0x4000be94, backtrace
+ * dispatch -> sscanf -> __d_vfscanf -> skip_spaces -> scanf_ungetc). The board
+ * died part-way through handling feed_pair, so it never reached either emit()
+ * below and never answered. From the host that looked exactly like a board
+ * ignoring the command, which is why `blink pair` reported "did not confirm
+ * pairing" and pairing had never once succeeded.
+ *
+ * Nothing here wants stdio: this is four bounded integers and three dots.
+ * Stricter than the format string it replaces, deliberately -- digits only, so
+ * no leading space, no sign, no "0x". Keep it that way; an address arriving
+ * over USB is the one input that decides who the board talks to on the LAN.
+ */
+static bool parse_dotted_quad(const char *s, unsigned octets[4])
+{
+	for (int i = 0; i < 4; i++) {
+		unsigned v = 0;
+		int digits = 0;
+
+		while (*s >= '0' && *s <= '9' && digits < 3) {
+			v = v * 10U + (unsigned)(*s - '0');
+			s++;
+			digits++;
+		}
+		/* No digits, or a fourth one we refused to consume: either way
+		 * this is not an octet. The leftover digit fails the separator
+		 * check below, or the terminator check on the last pass. */
+		if (digits == 0 || v > 255U) {
+			return false;
+		}
+		octets[i] = v;
+
+		if (i < 3) {
+			if (*s != '.') {
+				return false;
+			}
+			s++;
+		}
+	}
+	return *s == '\0';
+}
+
 static void dispatch(const char *json)
 {
 	char type[16];
@@ -307,14 +354,12 @@ static void dispatch(const char *json)
 			     port_num == (double)(uint16_t)port_num;
 
 		/* A literal IPv4 address keeps the board independent of mDNS and
-		 * avoids putting a resolver or provider credential on this device. */
+		 * avoids putting a resolver or provider credential on this device.
+		 * parse_dotted_quad already enforces the range and the dots, so
+		 * the per-octet and strchr checks that used to live here are gone
+		 * rather than merely moved. */
 		unsigned octets[4];
-		char tail;
-		if (!valid || sscanf(host, "%u.%u.%u.%u%c", &octets[0], &octets[1],
-				    &octets[2], &octets[3], &tail) != 4 ||
-		    octets[0] > 255 || octets[1] > 255 ||
-		    octets[2] > 255 || octets[3] > 255 ||
-		    !strchr(host, '.')) {
+		if (!valid || !parse_dotted_quad(host, octets)) {
 			valid = false;
 		}
 		for (size_t i = 0; valid && i < CFG_FEED_KEY_LEN * 2; i++) {
