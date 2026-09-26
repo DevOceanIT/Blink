@@ -358,8 +358,10 @@ Claude and Codex each have a row. Every row shows its own five-hour and
 seven-day percentage, reset countdown, and reading age. A percentage that is
 not available stays `--%`; it never becomes a reassuring green zero. The
 highest valid percentage among all four windows also controls the rear RGB LED:
-green below 60%, yellow at 60-74%, orange at 75-84%, solid red at 85-91%, and a fast red pulse at 92% or more.
-The LED is off when no usable reading is available or the host disconnects.
+green below 60%, yellow at 60-69%, orange at 70-79%, solid red at 80-89%,
+flashing red at 90-99%, and solid purple at 100%. The flash is a hard on/off
+blink on a 1 s cycle. The LED is off when no usable reading is available or the
+host disconnects.
 
 The first design put both providers in nested rings. That made the percentages
 and provider identities hard to read on a 320 x 240 panel. The second design

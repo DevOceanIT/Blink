@@ -15,8 +15,17 @@ macOS desktop or menu-bar application.
 - Swipe down opens Settings; swipe up or Back closes it. The old left arrow
   and replay shortcut are removed.
 - The rear RGB LED follows the highest known percentage across both providers
-  and both windows: green below 60%, yellow from 60%, orange from 75%, solid
-  red from 85%, pulsing red from 92%. The pulse is smooth with a 640 ms cycle.
+  and both windows, on round tens: green below 60%, yellow from 60%, orange
+  from 70%, solid red from 80%, flashing red from 90%, solid purple at 100%.
+  The flash is a hard on/off blink on a 1 s cycle, not the old smooth ramp.
+  Nothing animates at 100%: once quota is gone the light stops asking for
+  attention and just states the fact. Every lit channel runs at full duty, so
+  each colour is as bright as the part goes; orange is the one blend that
+  needs green held down, or it would read as yellow.
+- `tools/led_walk.py` feeds the board synthetic percentages so the bands can be
+  seen on demand rather than waited for. The board logs `[led] band <name>` on
+  every change, which is the only way to check a colour without turning the
+  board around.
 
 ## Hardware and preservation
 
@@ -44,11 +53,21 @@ A naturally refreshed Claude Code status line can provide exact reset times.
 ## Verification and remaining checks
 
 The earlier combined layout, touch alignment, down/up Settings gestures and
-green LED were physically confirmed by the owner. The revised rate layout and
-red pulse require another physical check. Host checks cover rate sampling,
-quota drops, changed reset boundaries, stale observations, LED thresholds and
-pulse brightness. Firmware must also be built, flashed and boot-verified;
-configuration and compilation alone are not evidence of live success.
+green LED were physically confirmed by the owner. The revised rate layout still
+requires another physical check.
+
+The LED bands were confirmed on hardware 2026-09-26 by driving the board with
+`tools/led_walk.py` and reading its own `[led] band <name>` line back at each
+step: 60 -> yellow, 70 -> orange, 80 -> red, 90 -> red-flash, 100 -> purple.
+That verifies the firmware's choice of band, not the colour a human sees, so
+if a band ever looks wrong the log tells you whether to suspect the policy or
+the wiring.
+
+Host checks cover rate sampling, quota drops, changed reset boundaries, stale
+observations, and the LED band boundaries and blink duty
+(`tests/status_led/host_test.c`). Firmware must also be built, flashed and
+boot-verified; configuration and compilation alone are not evidence of live
+success.
 
 GitHub publication is requested after review. Do not include private backups,
 keys, real session captures, or Claude settings in the published repository.

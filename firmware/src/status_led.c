@@ -26,38 +26,68 @@ static void animate(struct k_work *work)
 {
 	ARG_UNUSED(work);
 	enum status_led_band band = atomic_get(&desired_band);
-	unsigned int r = 0, g = 0;
+	unsigned int r = 0, g = 0, b = 0;
 
 	if (!ready) {
 		return;
 	}
+	/* Every channel that is on is driven at 100% duty, which on this
+	 * inverted-polarity common-anode LED is as bright as the part goes.
+	 * Orange is the one exception and has to be: green below full is what
+	 * makes it orange instead of yellow. */
 	switch (band) {
 	case STATUS_LED_GREEN:  g = 100; break;
 	case STATUS_LED_YELLOW: r = 100; g = 100; break;
 	case STATUS_LED_ORANGE: r = 100; g = 25; break;
 	case STATUS_LED_RED:    r = 100; break;
-	case STATUS_LED_RED_PULSE:
-		r = status_led_pulse_percent((unsigned int)(k_uptime_get() % 640));
+	case STATUS_LED_RED_FLASH:
+		r = status_led_flash_on((unsigned int)(k_uptime_get() % 1000)) ? 100 : 0;
 		break;
+	/* Red and blue together, both full. The brightest purple the LED can
+	 * make; there is no third primary to mix in. */
+	case STATUS_LED_PURPLE: r = 100; b = 100; break;
 	default: break;
 	}
 	int err = pulse(&red, r);
 
 	err |= pulse(&green, g);
-	err |= pulse(&blue, 0);
+	err |= pulse(&blue, b);
 	if (err && !reported_error)
 		printk("[led] unable to set rear RGB channels\n");
 	reported_error = err != 0;
-	if (band == STATUS_LED_RED_PULSE)
-		k_work_schedule(&animation, K_MSEC(20));
+	/* Only the blink needs waking again. Every other band, purple included,
+	 * is static once written. 100 ms is well inside the 500 ms half-cycle. */
+	if (band == STATUS_LED_RED_FLASH)
+		k_work_schedule(&animation, K_MSEC(100));
+}
+
+static const char *band_name(enum status_led_band band)
+{
+	switch (band) {
+	case STATUS_LED_OFF:       return "off";
+	case STATUS_LED_GREEN:     return "green";
+	case STATUS_LED_YELLOW:    return "yellow";
+	case STATUS_LED_ORANGE:    return "orange";
+	case STATUS_LED_RED:       return "red";
+	case STATUS_LED_RED_FLASH: return "red-flash";
+	case STATUS_LED_PURPLE:    return "purple";
+	}
+	return "?";
 }
 
 /* Serialize PWM writes on the system work queue. GUI updates change only the
- * requested band; repeated usage messages cannot restart the pulse cycle. */
+ * requested band; repeated usage messages cannot restart the blink cycle. */
 static void apply(enum status_led_band band)
 {
-	if (ready && atomic_set(&desired_band, band) != band)
+	if (ready && atomic_set(&desired_band, band) != band) {
+		/* On change only, so this cannot spam: the blink reschedules
+		 * itself without coming back through here. Worth having --
+		 * the LED is on the BACK of the board, so when a colour looks
+		 * wrong this is the only way to tell a policy problem from a
+		 * wiring one without turning the thing around. */
+		printk("[led] band %s\n", band_name(band));
 		k_work_reschedule(&animation, K_NO_WAIT);
+	}
 }
 
 void status_led_init(void)

@@ -85,9 +85,10 @@ seven-day readings and reset times. A downward swipe opens settings; the
 right-edge chevron can be tapped as a backup. Swipe up or use Back to close
 settings. The small marks at the upper left show session activity, not
 provider selection. The rear RGB LED follows whichever available usage window
-is closest to its limit: green below 60%, yellow at 60-74%, orange at 75-84%,
-solid red at 85-91%, and a fast red pulse from 92%. It turns off when the host disconnects or no reading is
-available.
+is closest to its limit: green below 60%, yellow at 60-69%, orange at 70-79%,
+solid red at 80-89%, flashing red at 90-99%, and solid purple at 100%. The
+flash is a hard on/off blink on a 1 s cycle; nothing animates at 100%. It turns
+off when the host disconnects or no reading is available.
 
 ## What's in here
 
