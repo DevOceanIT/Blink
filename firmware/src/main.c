@@ -961,17 +961,15 @@ static void run_local_feed(void)
 	 * when someone submits a different network. Nothing else needs to
 	 * delete them, and a transient radio failure is not consent to.
 	 */
-	int join = -1;
-
-	for (int attempt = 0; attempt < 2 && join != 0; attempt++) {
-		if (attempt > 0) {
-			printk("[wifi] join failed (%s); retrying once\n",
-			       net_wifi_last_error());
-			wifi_settle();
-		}
-		join = net_wifi_connect(feed_ssid, feed_psk, 30);
-	}
-	if (join != 0) {
+	/*
+	 * ONE attempt. Do not add a retry loop here: calling net_wifi_connect()
+	 * a second time in the same boot took a CPU exception in the main
+	 * thread on hardware (2026-09-26, ~21.7 s in, immediately after the
+	 * second "connecting" line). The radio needs a reset between attempts
+	 * and this path does not give it one. Retrying is what a power cycle is
+	 * for, and keeping the credentials is what makes that work.
+	 */
+	if (net_wifi_connect(feed_ssid, feed_psk, 30) != 0) {
 		const char *reason = net_wifi_last_error();
 
 		printk("[wifi] join failed (%s); keeping credentials, opening"
