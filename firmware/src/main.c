@@ -935,9 +935,48 @@ static void run_local_feed(void)
 		return;
 	}
 	wifi_settle();
-	if (net_wifi_connect(feed_ssid, feed_psk, 30) != 0) {
+	/*
+	 * Two attempts, then the portal -- and the stored credentials are KEPT
+	 * either way.
+	 *
+	 * This used to be a single attempt followed by cfg_clear_wifi(), which
+	 * made the board close to impossible to get onto a network. The radio
+	 * here comes up blind roughly every other soft reset (see the note
+	 * above ap_psk_setup); on such a boot the join times out, the stored
+	 * network was erased, and the next boot came up with nothing and sat in
+	 * the portal. From outside that is indistinguishable from the save
+	 * never having worked, which is exactly the conclusion Christopher
+	 * reached on 2026-09-26. The save was fine: cfg persist() is a
+	 * synchronous flash write behind an A/B slot scheme and never lost a
+	 * byte.
+	 *
+	 * Not fixed by rebooting to re-roll the radio, which is what
+	 * phase1_get_wifi does. That works, but four bounded reboots is several
+	 * minutes of a device restarting on its own in front of someone who has
+	 * every reason to think it is broken. Not worth it here, because simply
+	 * not deleting the credentials already gets the same result: the next
+	 * ordinary boot, or a power cycle, retries them.
+	 *
+	 * Clearing is left to the portal, which overwrites via cfg_set_wifi()
+	 * when someone submits a different network. Nothing else needs to
+	 * delete them, and a transient radio failure is not consent to.
+	 */
+	int join = -1;
+
+	for (int attempt = 0; attempt < 2 && join != 0; attempt++) {
+		if (attempt > 0) {
+			printk("[wifi] join failed (%s); retrying once\n",
+			       net_wifi_last_error());
+			wifi_settle();
+		}
+		join = net_wifi_connect(feed_ssid, feed_psk, 30);
+	}
+	if (join != 0) {
 		const char *reason = net_wifi_last_error();
-		cfg_clear_wifi();
+
+		printk("[wifi] join failed (%s); keeping credentials, opening"
+		       " setup. A power cycle will retry them.\n",
+		       reason ? reason : "no reason");
 		ui_setup_show();
 		pump_ui();
 		ui_boot_teardown();

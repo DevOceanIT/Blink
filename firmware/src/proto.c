@@ -392,6 +392,56 @@ static void dispatch(const char *json)
 #endif
 		return;
 	}
+	/*
+	 * Set the home WiFi credentials over USB, as an alternative to the
+	 * SoftAP portal.
+	 *
+	 * The portal is the nicer flow when it works: scan a QR, pick the
+	 * network on a phone, never type a password into a 2.8" touchscreen.
+	 * But it assumes a working radio and a person who can get a phone onto
+	 * the board's AP, and when either of those fails there was no way in at
+	 * all -- the board sat on the setup screen with nothing to offer and no
+	 * keyboard to type on (Christopher, 2026-09-26, on this board).
+	 *
+	 * This does not widen the trust boundary. Anything on this port can
+	 * already pair the feed, which writes a 32-byte shared secret, and can
+	 * push OTA images. USB is already the fully-trusted channel; adding
+	 * credentials it can write does not change who can write them.
+	 *
+	 * The credential is not echoed, not logged, and the local copy is wiped
+	 * before returning. The reply says only whether the write succeeded --
+	 * never which field was wrong, matching feed_pair above.
+	 *
+	 * Persist only; the caller reboots. Joining straight from here is the
+	 * mistake the portal flow already documents: every post-AP join timed
+	 * out on hardware (3/3) while the same credentials joined instantly
+	 * from a fresh boot.
+	 */
+	if (strcmp(type, "wifi_set") == 0) {
+#if IS_ENABLED(CONFIG_BLINK_WIFI_MODE)
+		char ssid[CFG_SSID_MAX];
+		char psk[CFG_PSK_MAX];
+		bool valid = msg_get_str(json, "ssid", ssid, sizeof(ssid)) &&
+			     ssid[0] != '\0';
+
+		/* An absent psk is an open network, not a malformed request. */
+		if (!msg_get_str(json, "psk", psk, sizeof(psk))) {
+			psk[0] = '\0';
+		}
+		int rc = valid ? cfg_set_wifi(ssid, psk) : -EINVAL;
+
+		memset(psk, 0, sizeof(psk));
+		if (rc == 0) {
+			printk("[cfg] wifi credentials stored over USB\n");
+			emit("{\"t\":\"wifi_saved\",\"ok\":true}");
+		} else {
+			emit("{\"t\":\"wifi_saved\",\"ok\":false}");
+		}
+#else
+		emit("{\"t\":\"wifi_saved\",\"ok\":false}");
+#endif
+		return;
+	}
 	host_bye = false;
 	if (strcmp(type, "usage") == 0) {
 		double sp = 0, wp = 0;

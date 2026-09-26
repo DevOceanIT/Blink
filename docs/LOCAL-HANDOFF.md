@@ -22,6 +22,17 @@ macOS desktop or menu-bar application.
   attention and just states the fact. Every lit channel runs at full duty, so
   each colour is as bright as the part goes; orange is the one blend that
   needs green held down, or it would read as yellow.
+- WiFi credentials can be set over USB with `tools/set_wifi.py`, as an
+  alternative to the SoftAP portal when the portal cannot be reached. It reads
+  the passphrase from `BLINK_WIFI_PSK` so it never lands in shell history, and
+  the firmware's `wifi_set` handler neither echoes nor logs it. The board
+  persists and joins on its next boot; it does not join in place.
+- A failed join no longer erases the stored network. `run_local_feed` tries
+  twice, then opens the portal with the credentials still on flash, so the next
+  power cycle retries them. It used to call `cfg_clear_wifi()` after a single
+  failure, which combined with the blind-radio quirk made the device close to
+  impossible to get onto a network and looked exactly like a save that never
+  worked. Only the portal clears credentials now, by overwriting them.
 - `tools/led_walk.py` feeds the board synthetic percentages so the bands can be
   seen on demand rather than waited for. The board logs `[led] band <name>` on
   every change, which is the only way to check a colour without turning the
