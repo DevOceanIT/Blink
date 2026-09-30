@@ -13,6 +13,7 @@ static const struct pwm_dt_spec green = PWM_DT_SPEC_GET(DT_NODELABEL(rear_green)
 static const struct pwm_dt_spec blue = PWM_DT_SPEC_GET(DT_NODELABEL(rear_blue));
 static bool ready;
 static atomic_t desired_band = ATOMIC_INIT(STATUS_LED_OFF);
+static atomic_t desired_wink = ATOMIC_INIT(STATUS_LED_OFF);
 static bool reported_error;
 static void animate(struct k_work *work);
 static K_WORK_DELAYABLE_DEFINE(animation, animate);
@@ -26,10 +27,22 @@ static void animate(struct k_work *work)
 {
 	ARG_UNUSED(work);
 	enum status_led_band band = atomic_get(&desired_band);
+	enum status_led_band wink = atomic_get(&desired_wink);
 	unsigned int r = 0, g = 0, b = 0;
 
 	if (!ready) {
 		return;
+	}
+	/*
+	 * A slower window is in a worse band than the steady colour can show,
+	 * so borrow the light for two short pulses every 25 s. Swapping the
+	 * colour rather than blanking it is what makes the wink informative:
+	 * the pulse itself says "something crossed a line", and its colour says
+	 * which line.
+	 */
+	if (wink != STATUS_LED_OFF &&
+	    status_led_wink_on((unsigned int)k_uptime_get())) {
+		band = wink;
 	}
 	/* Every channel that is on is driven at 100% duty, which on this
 	 * inverted-polarity common-anode LED is as bright as the part goes.
@@ -57,8 +70,17 @@ static void animate(struct k_work *work)
 	reported_error = err != 0;
 	/* Only the blink needs waking again. Every other band, purple included,
 	 * is static once written. 100 ms is well inside the 500 ms half-cycle. */
-	if (band == STATUS_LED_RED_FLASH)
+	/*
+	 * Only animated states need waking again. The fast flash wants 100 ms,
+	 * well inside its 500 ms half-cycle. The wink wants 40 ms because its
+	 * pulses are 120 ms and both edges have to be caught -- it costs one
+	 * PWM write per tick and only while a slow window is actually over a
+	 * line, which is the minority of the time.
+	 */
+	if (atomic_get(&desired_band) == STATUS_LED_RED_FLASH)
 		k_work_schedule(&animation, K_MSEC(100));
+	else if (wink != STATUS_LED_OFF)
+		k_work_schedule(&animation, K_MSEC(40));
 }
 
 static const char *band_name(enum status_led_band band)
@@ -77,15 +99,27 @@ static const char *band_name(enum status_led_band band)
 
 /* Serialize PWM writes on the system work queue. GUI updates change only the
  * requested band; repeated usage messages cannot restart the blink cycle. */
-static void apply(enum status_led_band band)
+static void apply(enum status_led_band band, enum status_led_band wink)
 {
-	if (ready && atomic_set(&desired_band, band) != band) {
-		/* On change only, so this cannot spam: the blink reschedules
-		 * itself without coming back through here. Worth having --
-		 * the LED is on the BACK of the board, so when a colour looks
-		 * wrong this is the only way to tell a policy problem from a
-		 * wiring one without turning the thing around. */
-		printk("[led] band %s\n", band_name(band));
+	bool changed;
+
+	if (!ready) {
+		return;
+	}
+	changed = atomic_set(&desired_band, band) != band;
+	changed |= atomic_set(&desired_wink, wink) != wink;
+	if (changed) {
+		/* On change only, so this cannot spam: the animations
+		 * reschedule themselves without coming back through here.
+		 * Worth having -- the LED is on the BACK of the board, so when
+		 * a colour looks wrong this is the only way to tell a policy
+		 * problem from a wiring one without turning the thing around. */
+		if (wink == STATUS_LED_OFF) {
+			printk("[led] band %s\n", band_name(band));
+		} else {
+			printk("[led] band %s, winking %s\n",
+			       band_name(band), band_name(wink));
+		}
 		k_work_reschedule(&animation, K_NO_WAIT);
 	}
 }
@@ -103,12 +137,18 @@ void status_led_init(void)
 
 void status_led_off(void)
 {
-	apply(STATUS_LED_OFF);
+	apply(STATUS_LED_OFF, STATUS_LED_OFF);
 }
 
 void status_led_update(double p1_session, double p1_weekly,
 		       double p2_session, double p2_weekly, bool connected)
 {
-	apply(status_led_band_for(p1_session, p1_weekly, p2_session,
-				  p2_weekly, connected));
+	enum status_led_band steady = status_led_steady_band(p1_session,
+							     p2_session,
+							     connected);
+	enum status_led_band alert = status_led_band_for(p1_session, p1_weekly,
+							 p2_session, p2_weekly,
+							 connected);
+
+	apply(steady, status_led_wink_band(steady, alert));
 }

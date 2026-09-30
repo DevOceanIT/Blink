@@ -62,8 +62,50 @@ int main(void)
 	assert(status_led_flash_on(1000));
 	assert(status_led_flash_on(2499));
 	assert(!status_led_flash_on(2500));
+
+	/*
+	 * The steady colour must ignore the weekly entirely. This is the whole
+	 * point of the 2026-09-30 change: a weekly stuck at 95% must not paint
+	 * the light red for days while the session is idle.
+	 */
+	check(status_led_steady_band(10, 10, true), STATUS_LED_GREEN,
+	      "steady ignores a bad weekly");
+	check(status_led_band_for(10, 95, 10, 10, true), STATUS_LED_RED_FLASH,
+	      "alert still sees that weekly");
+	check(status_led_steady_band(75, 10, true), STATUS_LED_ORANGE,
+	      "steady follows the worse session");
+	check(status_led_steady_band(-1, -1, true), STATUS_LED_OFF,
+	      "steady off with no session reading");
+	check(status_led_steady_band(50, 50, false), STATUS_LED_OFF,
+	      "steady off when disconnected");
+
+	/* The wink carries only what the steady colour cannot say. */
+	check(status_led_wink_band(STATUS_LED_GREEN, STATUS_LED_ORANGE),
+	      STATUS_LED_ORANGE, "wink shows a worse slow window");
+	check(status_led_wink_band(STATUS_LED_ORANGE, STATUS_LED_ORANGE),
+	      STATUS_LED_OFF, "no wink when it adds nothing");
+	check(status_led_wink_band(STATUS_LED_ORANGE, STATUS_LED_GREEN),
+	      STATUS_LED_OFF, "no wink for a better window");
+	check(status_led_wink_band(STATUS_LED_RED_FLASH, STATUS_LED_PURPLE),
+	      STATUS_LED_OFF, "no wink over the urgent flash");
+	check(status_led_wink_band(STATUS_LED_PURPLE, STATUS_LED_PURPLE),
+	      STATUS_LED_OFF, "no wink over exhausted");
+	check(status_led_wink_band(STATUS_LED_OFF, STATUS_LED_RED),
+	      STATUS_LED_OFF, "no wink while disconnected");
+
+	/* Two 120 ms pulses, then quiet until the period comes round. */
+	assert(status_led_wink_on(0));
+	assert(status_led_wink_on(119));
+	assert(!status_led_wink_on(120));
+	assert(!status_led_wink_on(239));
+	assert(status_led_wink_on(240));
+	assert(status_led_wink_on(359));
+	assert(!status_led_wink_on(360));
+	assert(!status_led_wink_on(12000));
+	assert(!status_led_wink_on(24999));
+	assert(status_led_wink_on(25000));	/* next period */
 	if (failures == 0) {
-		puts("status_led: 14 policy and 7 blink checks passed");
+		puts("status_led: 25 policy and 17 timing checks passed");
 	}
 	return failures ? 1 : 0;
 }
