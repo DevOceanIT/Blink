@@ -2071,6 +2071,7 @@ int main(void)
 	 * announces itself into a fresh splash. */
 	if (proto_host_seen()) {
 		printk("[usage] mode: USB bridge\n");
+		usage_view_set_source(USAGE_SOURCE_USB);
 		usage_view_init();
 		/* Same CONNECTING bar as standalone (user request
 		 * 2026-07-16); the link step is already done -- the daemon
@@ -2102,9 +2103,11 @@ int main(void)
 		ota_report_outcome();
 		usage_view_set_status(USAGE_STATUS_DISCONNECTED);
 		printk("[usage] mode: local Mac feed\n");
+		usage_view_set_source(USAGE_SOURCE_WIFI);
 		run_local_feed();
 	}
 	printk("[usage] no Mac feed pairing; mode: USB bridge\n");
+	usage_view_set_source(USAGE_SOURCE_USB);
 	usage_view_init();
 	usage_view_boot_begin(usb_boot_steps, 2);
 	lv_timer_handler();

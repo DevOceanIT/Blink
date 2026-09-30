@@ -140,6 +140,36 @@ static struct gauge session, weekly;
  * positions and colours its answer.
  */
 static lv_obj_t *dot;		/* data health, top-right */
+static lv_obj_t *src_icon;	/* where the numbers come from, top-left */
+static enum usage_source data_source = USAGE_SOURCE_NONE;
+
+/*
+ * Paint the source glyph. Split out because two callers need it and neither
+ * can assume the other ran: the screen build applies whatever mode was already
+ * chosen, and usage_view_set_source() may be called before the screen exists
+ * -- main.c settles the mode around the same moment it builds the view, and
+ * the order has changed once already.
+ */
+static void apply_source(void)
+{
+	if (!src_icon) {
+		return;
+	}
+	switch (data_source) {
+	case USAGE_SOURCE_USB:
+		lv_label_set_text(src_icon, LV_SYMBOL_USB);
+		break;
+	case USAGE_SOURCE_WIFI:
+		lv_label_set_text(src_icon, LV_SYMBOL_WIFI);
+		break;
+	default:
+		/* Nothing decided yet. Empty rather than a guess: a wrong
+		 * glyph here is worse than none, since the whole point is to
+		 * answer "which one is it". */
+		lv_label_set_text(src_icon, "");
+		break;
+	}
+}
 static lv_obj_t *pip[PIP_MAX];		/* execution state, one per session */
 static lv_obj_t *pip_num[PIP_MAX];	/* its tally, in counts mode only */
 /*
@@ -738,6 +768,9 @@ void usage_view_deinit(void)
 	 * set_status, the same way the health dot does.
 	 */
 	dot = NULL;
+	src_icon = NULL;	/* apply_source() guards on this, so it must be
+				 * nulled here like the rest. data_source is a
+				 * choice, not a widget, and survives. */
 	for (int i = 0; i < PIP_MAX; i++) {
 		pip[i] = NULL;
 		pip_num[i] = NULL;
@@ -795,6 +828,31 @@ void usage_view_init(void)
 	/* A swipe starting on this dot must still reach the screen below it,
 	 * or the settings gesture goes dead whenever the touch lands here. */
 	lv_obj_add_flag(dot, LV_OBJ_FLAG_GESTURE_BUBBLE);
+
+	/*
+	 * The source glyph: a USB or WiFi mark saying where the numbers are
+	 * arriving from, which nothing on screen said once WiFi became an
+	 * option.
+	 *
+	 * Top LEFT, in the slot the session pips vacated, rather than beside
+	 * the health dot where it belongs by meaning. The right-hand corner is
+	 * already full: the dot sits at -12 and age_lbl at -30, so a glyph
+	 * between them would have landed on the reading age. The pip row's
+	 * start is genuinely empty now and shares the header's centre line, so
+	 * it lines up with the dot across the screen instead of beside it.
+	 *
+	 * Grey like the rest of the chrome. It is a label, not an alarm -- the
+	 * dot owns colour in the header, and this must not compete with it.
+	 *
+	 * A label is not clickable in LVGL, so unlike the dot it needs no
+	 * gesture flag to keep the settings swipe alive over it.
+	 */
+	src_icon = lv_label_create(scr);
+	lv_label_set_text(src_icon, "");
+	lv_obj_set_style_text_color(src_icon, COL_GREY, 0);
+	lv_obj_set_style_text_font(src_icon, &lv_font_montserrat_14, 0);
+	lv_obj_align(src_icon, LV_ALIGN_TOP_LEFT, PIP_X0, HDR_ROW_Y - 2);
+	apply_source();
 
 	/*
 	 * The execution-state row, in the gap between the clock and the brand.
@@ -2605,7 +2663,7 @@ void usage_view_set_sessions(int n_sessions, int n_agents)
  *
  * No dash in any of these -- fmt_hint uses " - " as its separator.
  */
-static const char *activity_text(void)
+__maybe_unused static const char *activity_text(void)
 {
 	switch (activity) {
 	case USAGE_ACTIVITY_STUCK:	return "Session is wedged";
@@ -2635,10 +2693,31 @@ static const char *activity_text(void)
  */
 static const char *activity_hint(void)
 {
-	static char hbuf[FMT_HINT_MAX];
+	/*
+	 * Silenced 2026-09-30, same decision as the session pips and for the
+	 * same reason. This line reported execution state as sentences like
+	 * "5 sessions finished", which is the pip row's information in words:
+	 * a tally of sessions the owner did not ask about, changing under him,
+	 * meaning nothing he could act on. "It just told me five sessions
+	 * finished for some reason."
+	 *
+	 * Only the EXECUTION axis is silenced. Data health still owns this
+	 * line and still speaks -- HOST LOST, stale readings, the states that
+	 * say the numbers above are not to be trusted. Those are the reason
+	 * the hint line exists and they are untouched; see the switch in
+	 * usage_view_set_status, which runs before this is consulted.
+	 *
+	 * activity_text() and fmt_hint() are kept and still tested. Bringing
+	 * the sentence back is restoring one call, not rewriting the wording.
+	 */
+	return "";
+}
 
-	fmt_hint(activity_text(), session_label, hbuf, sizeof(hbuf));
-	return hbuf;
+void usage_view_set_source(enum usage_source source)
+{
+	data_source = source;
+	apply_source();		/* no-op until the screen is built, then the
+				 * build calls it again with this value */
 }
 
 void usage_view_set_status(enum usage_status status)

@@ -5,6 +5,18 @@
 #include <stdbool.h>
 
 /* Connection state, shown as a coloured dot. Mirrors the web UI's convention. */
+/*
+ * Where the numbers are arriving from. Distinct from usage_status, which says
+ * whether they are any good: the pair reads as "the data is sound, and it is
+ * coming in this way". Asked for 2026-09-30 -- with WiFi now an option there
+ * was nothing on screen saying which of the two was live.
+ */
+enum usage_source {
+	USAGE_SOURCE_NONE = 0,	/* nothing drawn: during boot, before a mode */
+	USAGE_SOURCE_USB,	/* tethered to the Mac's bridge over serial */
+	USAGE_SOURCE_WIFI,	/* joined WiFi, polling the Mac's local feed */
+};
+
 enum usage_status {
 	USAGE_STATUS_DISCONNECTED = 0,	/* grey  */
 	USAGE_STATUS_OK,		/* green */
@@ -92,6 +104,10 @@ void usage_view_sync_takeover(void);
 void usage_view_set_models(double fable_pct);
 
 void usage_view_set_status(enum usage_status status);
+
+/* Draw the source glyph beside the health dot. Safe before the screen is
+ * built: the choice is remembered and applied when it is. */
+void usage_view_set_source(enum usage_source source);
 
 void usage_view_set_activity(enum usage_activity a);
 
