@@ -84,14 +84,25 @@ def main() -> int:
             ser.write(msg)
             ser.flush()
             print("%5.1f%%  -> expect %s" % (pct, expect))
-            # Echo the board's own [led] line back, which is the actual proof.
+            # Report which band the board chose WITHOUT echoing the serial
+            # stream: the house rule is that serial buffer contents are never
+            # printed, at any level, debug paths included. So match against the
+            # known band names and print our own word for it. Anything we did
+            # not put in STEPS prints as "other", never as captured bytes.
             end = time.time() + args.hold
+            seen = None
             while time.time() < end:
                 chunk = ser.read(256)
                 for line in chunk.split(b"\n"):
-                    text = line.decode("utf-8", "replace").strip()
-                    if "[led]" in text:
-                        print("        board says: %s" % text)
+                    text = line.decode("utf-8", "replace")
+                    if "[led] band " not in text:
+                        continue
+                    tail = text.split("[led] band ", 1)[1].strip()
+                    known = {s[1] for s in STEPS}
+                    seen = tail if tail in known else "other"
+            if seen:
+                print("        board reports band: %s%s" %
+                      (seen, "" if seen == expect else "   <-- MISMATCH"))
         print("\nDone. The real numbers come back on the next reboot.")
         return 0
     finally:

@@ -826,29 +826,24 @@ void usage_view_init(void)
 	 * Y is PIP_Y so an 8 px pip shares the 12 px health dot's centre line:
 	 * the header's marks sit on one line even though they are two sizes.
 	 */
-	for (int i = 0; i < PIP_MAX; i++) {
-		pip[i] = lv_obj_create(scr);
-		lv_obj_set_size(pip[i], PIP_SZ, PIP_SZ);
-		lv_obj_set_style_radius(pip[i], LV_RADIUS_CIRCLE, 0);
-		lv_obj_set_style_border_width(pip[i], 0, 0);
-		lv_obj_set_style_bg_color(pip[i], COL_GREY, 0);
-		lv_obj_set_style_bg_opa(pip[i], LV_OPA_COVER, 0);
-		lv_obj_align(pip[i], LV_ALIGN_TOP_LEFT,
-			     PIP_X0 + i * PIP_PITCH, PIP_Y);
-		lv_obj_add_flag(pip[i], LV_OBJ_FLAG_GESTURE_BUBBLE);
-		lv_obj_clear_flag(pip[i], LV_OBJ_FLAG_CLICKABLE);
-		lv_obj_add_flag(pip[i], LV_OBJ_FLAG_HIDDEN);
-
-		/* Its tally, drawn only in counts mode. A label is not
-		 * clickable in LVGL, so it needs no flag of its own. */
-		pip_num[i] = lv_label_create(scr);
-		lv_label_set_text(pip_num[i], "");
-		lv_obj_set_style_text_color(pip_num[i], COL_GREY, 0);
-		lv_obj_align(pip_num[i], LV_ALIGN_TOP_LEFT,
-			     PIP_X0 + i * PIP_PITCH + PIP_SZ + PIP_NUM_GAP,
-			     PIP_NUM_Y);
-		lv_obj_add_flag(pip_num[i], LV_OBJ_FLAG_HIDDEN);
-	}
+	/*
+	 * The session pips are NOT created. Owner's call, 2026-09-26: "I can't
+	 * make heads or tails out of those little dots" -- one small circle per
+	 * open session, colour-coded, with no label anywhere near them, and the
+	 * count changing underneath him as sessions came and went. The row was
+	 * legible only to someone who already knew the scheme.
+	 *
+	 * Left as a deliberate no-create rather than ripped out. refresh_dots()
+	 * paints the health dot first and only then tests `if (!pip[0])`, so
+	 * leaving these NULL disables the whole execution row at the one place
+	 * that decides it, while the data-health dot beside it is untouched.
+	 * fmt_pips() and pip_colour() keep their tests passing and the layout
+	 * constants keep documenting the geometry, so restoring this is
+	 * un-commenting a loop rather than reconstructing a feature.
+	 *
+	 * The execution state did not go anywhere: usage_view_set_activity()
+	 * still drives the hint line under the gauges, which says it in words.
+	 */
 
 	/* Carries the amber/red explanation. Empty when all is well: the gauges
 	 * still hold real (if stale) numbers in those states, so they stay visible
