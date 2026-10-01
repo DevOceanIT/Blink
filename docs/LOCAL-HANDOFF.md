@@ -22,6 +22,26 @@ macOS desktop or menu-bar application.
   attention and just states the fact. Every lit channel runs at full duty, so
   each colour is as bright as the part goes; orange is the one blend that
   needs green held down, or it would read as yellow.
+- **Window rollover is automatic and needs no intervention.** Observed live
+  2026-10-01 13:50: the Claude session window ended, the daemon reported
+  `0.0%` with the countdown at `-1`, and seventeen seconds later a fresh window
+  arrived as `3.0%/17980s`. Nobody touched anything. The mechanism is
+  `_rolled_over()` / `_rolled_at()` in `pc/normalizer.py`, which treats a
+  rollover as evidence (some source watched the window empty) rather than as
+  something inferred from the clock.
+  One deliberate subtlety: at the moment of rollover the percentage becomes
+  `0.0` only if the reading is FRESH. On a stale reading it becomes UNKNOWN
+  (`-1`) instead, because the panel will not assert a confident zero it cannot
+  vouch for. `status_led_band_of()` maps a negative percentage to
+  `STATUS_LED_OFF` and `status_led_worst()` skips it, so an unknown window
+  simply stops voting and the LED falls back to whatever the other windows say.
+  It never strands on the old colour.
+  Note also that 17980 s confirms the session window is five hours, which is
+  what any self-calibrating countdown should seed itself with.
+- A window at 100% on the OTHER provider holds the LED at purple even when this
+  one has just reset, because the steady band is the worst of both providers'
+  session windows. That is correct and will look wrong: on 2026-10-01 Claude
+  reset to 3% while Codex stayed at 100%, and the light stayed purple.
 - WiFi credentials can be set over USB with `tools/set_wifi.py`, as an
   alternative to the SoftAP portal when the portal cannot be reached. It reads
   the passphrase from `BLINK_WIFI_PSK` so it never lands in shell history, and

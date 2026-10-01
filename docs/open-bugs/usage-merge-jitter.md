@@ -1,0 +1,115 @@
+# The usage percentage jitters, and sometimes goes backwards
+
+Reported 2026-10-01: "the number just went from 73 to 72, which I've never
+seen." A cumulative percentage inside a window can only rise until the window
+rolls over, so a decrease is an invariant violation, not a cosmetic wobble.
+
+Nothing here is fixed. This is the measurement, so nobody re-derives it.
+
+## What was observed
+
+From the daemon's own log, in order, one source name per line:
+
+```
+claude/cli      39.0%
+claude/cli      39.0%
+claude/desktop  40.0%
+claude/desktop  40.0%
+claude/desktop  40.0%
+claude/cli      39.0%     <-- backwards
+claude/cli      40.0%
+claude/cli      41.0%
+```
+
+Also seen across a session rollover at 13:50: weekly moved 73 -> 68 -> 76,
+which is far larger than the one-point step and may be a separate mechanism.
+
+**Caveat on this evidence.** `pc/logbook.py:393` prints one `provider/src` pair
+followed by BOTH percentages, and `src` is only ever the SESSION source
+(`normalizer.py:175, 193`). So the trace above does not actually establish that
+the *weekly* winner flipped. The weekly's source is never logged. Anyone
+reproducing this should fix the log line first or they will mis-attribute it.
+
+## Two mechanisms, not one
+
+**1. No hysteresis, no per-source authority, no monotonic floor.**
+`_pick` (`pc/normalizer.py:118`) ranks strictly by `observed_at`. The two
+sources genuinely disagree: the desktop cache sees claude.ai and phone usage
+the CLI cannot. So the winner alternates and the merged percentage alternates
+with it. `firmware/src/usage_view.c:439` rounds with `(int32_t)(pct + 0.5)`, so
+a disagreement of 0.2 straddling the .5 boundary renders as a full point. Any
+hysteresis has to live on the daemon side; the firmware cannot smooth what it
+is handed.
+
+**2. The CLI frame is dated by the renderer, not by the reading.**
+`pc/providers/claude_cli.py:59` takes `observed_at` from `statusline.json`'s
+mtime, and `tools/blink-statusline.sh:50` rewrites that file on EVERY
+status-line render whether or not `rate_limits` changed. The `rate_limits`
+block inside holds whatever Claude Code last fetched, on its own slower
+schedule. So the frame's recency advances while its number stays frozen, and a
+fresh file holding an old number systematically beats an honestly-dated newer
+desktop sample.
+
+This is why the cli readings in the trace trail the desktop ones and then catch
+up. It also contradicts the contract at `pc/providers/base.py:79`:
+`observed_at` is "when the UNDERLYING DATA was written, not when we read it".
+The comment at `claude_cli.py:62-65` asserts mtime equals reading age, which is
+true of the file and false of the numbers in it.
+
+## Other findings in the same merge path
+
+- **`normalizer.py:197`** — `stale`, `observed_at`/wire `age_s` and `src`
+  describe only the session source, while `weekly_pct` may come from a much
+  older frame and is drawn as equally fresh. The on-screen age can therefore be
+  honest about the session and silently wrong about the weekly. Pinned as
+  intended behaviour by `test_each_window_resolves_independently:84`.
+- **`normalizer.py:135`** — reset times are picked with no `_survives_rollover`
+  check and no tie to the frame that supplied the percentage, so one window's
+  percentage can be paired with the next window's countdown. With `resets_at`
+  absent, `_window_has_reset` never fires and `_rolled_over` never zeroes that
+  percentage.
+- **`statusline_source.py:179`** — `observed_at = mtime_epoch` with no
+  plausibility range check. Every sibling reader guards this
+  (`claude_desktop.py:44-53`, `desktop_local_storage._valid:76`,
+  `weekly_anchor.load:85`), and one of their comments names the failure: a
+  future timestamp "is never stale AND beats every real reading, forever,
+  pinning the panel". An NTP step, a restored backup or a wrong clock freezes
+  the display on that payload while it captions itself as current.
+- **`statusline_source.py:60`** — no upper bound on `used_percentage`, no range
+  on `resets_at`, and `isinstance(resets, (int, float))` admits `True`. A
+  `resets_at` in milliseconds yields a ~56,000-year countdown and permanently
+  suppresses the burn rate; `{"resets_at": true}` fires a spurious rollover.
+- **`normalizer.py:85`** — `_survives_rollover`'s second disjunct tests only
+  that the attribute is non-None, not that it is the rollover being tested, so
+  a merged frame is permanently exempt from every future rollover. Latent:
+  `ingest.py:288` is the only production caller and does not nest. One line:
+  the test needs `>= rolled_at`, not `is not None`.
+- **`normalizer.py:115`** — `_rolled_at` only knows rollovers a source
+  explicitly reported. The drop evidence the codebase already computes
+  (`claude_desktop.session_burn_pph:257`, `weekly_anchor.refuted_by:178`, both
+  of which read a drop as a rollover) is never consumed by `merge()`, so a
+  pre-reset percentage can survive a rollover indefinitely.
+- **`claude_desktop.py:370`** — the burn rate hard-codes `doc.get("samples")`
+  while the percentage path goes through `_samples_array_by_shape`, which also
+  accepts `history`, `usage` and a bare list. A layout change silently kills
+  the rate while the percentages keep working.
+- **`claude_desktop.py:121`** — `_newest_sample` takes both percentages from
+  the single newest sample and keeps it when EITHER is usable, so one bad field
+  drops the other window from this source entirely — another contributor to the
+  flip-flop, invisible in the log because `src` names the session source.
+- **`normalizer.py:129`** — returning None when no percentage is available also
+  discards `state`, the counts and `label`, and `ingest.poll:290` then sends
+  nothing at all. On a fresh install with no `rate_limits` yet, the state light
+  never lights despite a running session.
+
+## Smallest fix for the reported symptom
+
+Two changes, and only these two are needed to stop the number going backwards:
+
+1. Date the CLI frame by when the reading was taken rather than when the file
+   was rewritten.
+2. Add hysteresis in `_pick` so a sub-point disagreement cannot flip the
+   winner.
+
+Neither changes what a board reports on average. Everything else above is
+real but is not this bug.
