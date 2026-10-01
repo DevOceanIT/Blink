@@ -102,6 +102,60 @@ true of the file and false of the numbers in it.
   nothing at all. On a fresh install with no `rate_limits` yet, the state light
   never lights despite a running session.
 
+## The Codex variant, measured 2026-10-01 14:01
+
+The same defect on the other provider, and the clearest instance of it, because
+here the stale reading carries its own proof of being expired.
+
+`codex_cli.recent_rollouts` globs `~/.codex/sessions/*/*/*/rollout-*.jsonl` and
+takes the most recently MODIFIED files. Each file's tail remembers whatever
+usage was current when that session last wrote. With several sessions open they
+disagree, and the winner is decided by file mtime.
+
+Sampled four rollouts at one instant:
+
+```
+age     6s    window=300    used=4.0    resets=+298 min
+age    41s    window=300    used=3.0    resets=+298 min
+age   982s    window=300    used=98.0   resets=-4 min
+age  1053s    window=300    used=91.0   resets=-4 min
+
+age     6s    window=10080  used=62.0   resets=+3092 min
+age  1053s    window=10080  used=60.0   resets=+3092 min
+```
+
+Two readings of the SAME five-hour window, four minutes after it rolled over:
+the fresh files report the new window at 3-4%, the older ones still report 98%
+and 91% of the window that just ended -- and they say so, with `resets_at` four
+minutes in the PAST.
+
+The owner's reported "my display says 98" is literally the `used=98.0` above.
+
+**Codex usage only refreshes when a Codex session writes.** There is no
+independent poller for it: the figure comes from the tail of a rollout file, so
+it moves when, and only when, somebody uses Codex. The owner predicted this and
+then proved it deliberately -- the LED went `purple` -> `green, winking red` ->
+`purple` -> `yellow, winking red` across 13:58..14:01 *because he resumed a
+Codex session*, which wrote the fresh 3-4% rollouts above. Left alone it would
+have sat on 98% until the next time he used Codex, which could be days.
+
+An earlier draft of this note claimed the panel corrected itself unprompted.
+It did not. Do not use the LED transitions above as evidence of self-healing.
+
+That is what makes the negative `resets_at` matter so much. The stale reading
+carries unambiguous proof that it describes a dead window, so the daemon has
+everything it needs to discount it WITHOUT a fresh sample -- and does not. Any
+candidate whose `resets_at` is already past should be excluded or zeroed before
+the recency contest, not after it. Same hole as the `_survives_rollover`
+finding at `normalizer.py:135`, reached by a different road.
+
+Fixing that would make the panel self-correcting at a window boundary for a
+provider nobody is currently using, which is the whole point of showing a
+countdown next to the number.
+
+Note also the weekly spread in that sample: 60 to 62 across files, which is the
+8-point swing behind the observed `73 -> 68 -> 76`.
+
 ## Smallest fix for the reported symptom
 
 Two changes, and only these two are needed to stop the number going backwards:
