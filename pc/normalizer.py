@@ -32,21 +32,58 @@ def _known_pct(v):
     return v is not None and v >= 0
 
 
-def _pick(frames, has, get):
+# How far a newer reading may sit BELOW an older one before it takes the dial.
+#
+# Within one window a usage percentage can only rise, so a newer reading one
+# point under an older one is not news -- it is two sources that disagree by
+# a rounding step or a fetch apart. The desktop cache sees claude.ai and the
+# phone and the CLI does not, they are fetched on different schedules, and
+# the firmware rounds with (int32_t)(pct + 0.5), so a disagreement of 0.2
+# straddling the .5 renders as a whole point. Strict recency handed the dial
+# back and forth between them and the panel stepped 40 -> 39 -> 40, which the
+# owner rightly read as the number going backwards (2026-10-01).
+#
+# One point and no more, so this can never become the rule the module
+# docstring rejects. A reset drops a window from tens of points to zero, far
+# past this, and still wins on recency the moment it is seen. The most a hold
+# can ever put on the dial is one point more than the newest reading says.
+HOLD_PCT = 1.0
+
+
+def _pick(frames, has, get, hold=0.0):
     """The freshest frame that actually has this field, or None.
 
     `has` decides whether a frame carries the field at all; a frame that does
     not is not a candidate, which is the whole point -- the desktop cache
     must never win the reset-timestamp contest by being newest when it has no
     reset timestamp to offer.
+
+    Freshest by `reading_at`, when the numbers were taken, rather than by
+    `observed_at`, when the file was last written -- see base for the source
+    whose two differ and what that cost.
+
+    `hold`, for percentages only: a fresh older reading up to that many
+    points ABOVE the newest keeps the dial. Not a stale one -- a reading old
+    enough to be disowned has no business overruling a live one, by however
+    little -- and only upward, so a newer reading that is higher always wins.
     """
     best = None
     for f in frames:
         if not has(f):
             continue
-        if best is None or f.observed_at > best.observed_at:
+        if best is None or f.reading_at > best.reading_at:
             best = f
-    return get(best) if best is not None else None, best
+    if best is None:
+        return None, None
+    held = best
+    if hold > 0:
+        ceiling = get(best) + hold
+        for f in frames:
+            if f is best or f.stale or not has(f):
+                continue
+            if get(held) < get(f) <= ceiling:
+                held = f
+    return get(held), held
 
 
 def _rolled_at(frames, attr):
@@ -119,12 +156,12 @@ def merge(frames):
         frames,
         lambda f: (_known_pct(f.session_pct)
                    and _survives_rollover(f, s_rolled, "session_rolled_at")),
-        lambda f: f.session_pct)
+        lambda f: f.session_pct, hold=HOLD_PCT)
     weekly_pct, weekly_src = _pick(
         frames,
         lambda f: (_known_pct(f.weekly_pct)
                    and _survives_rollover(f, w_rolled, "weekly_rolled_at")),
-        lambda f: f.weekly_pct)
+        lambda f: f.weekly_pct, hold=HOLD_PCT)
 
     if session_src is None and weekly_src is None:
         # Nothing here carries a usage percentage. A frame with only a model
@@ -193,6 +230,7 @@ def merge(frames):
         provider=provider,
         src=primary.src,
         observed_at=primary.observed_at,
+        reading_at=primary.reading_at,
         active_at=active_at,
         session_pct=session_pct if session_pct is not None else base.UNKNOWN,
         session_resets_at=session_resets_at,

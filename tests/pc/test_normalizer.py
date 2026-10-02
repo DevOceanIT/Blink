@@ -1,5 +1,6 @@
 """Conflict and recency resolution across sources that each see a slice."""
 from pc import normalizer
+from pc import protocol
 from pc import statusline_source as ss
 from pc.providers import base
 
@@ -494,3 +495,104 @@ def test_desktop_local_storage_supplies_a_reset_the_history_file_cannot():
     merged = normalizer.merge([history, local_storage])
     assert merged.session_resets_at == now + 3600
     assert merged.weekly_pct == 17.0
+
+
+# --- the percentage going backwards (docs/open-bugs/usage-merge-jitter.md) --
+#
+# Observed 2026-10-01, the daemon's own log, in order:
+#
+#     claude/cli 39   claude/desktop 40   claude/cli 39   claude/cli 40
+#
+# Two causes, both pinned here: the CLI frame was dated by its renderer
+# rather than by its reading, and nothing stopped a one-point disagreement
+# between two honest sources from flipping the winner.
+
+
+def test_a_re_rendered_old_number_does_not_beat_a_newer_reading():
+    """The trace. The CLI's file was rewritten after the desktop sample, but
+    the 39 inside it was taken before."""
+    m = normalizer.merge([
+        desktop(NOW - 120, session=40.0),
+        base.NormalizedUsageFrame(
+            provider="claude", src="cli", observed_at=NOW - 5,
+            reading_at=NOW - 600, session_pct=39.0),
+    ])
+    assert m.session_pct == 40.0
+    assert m.src == "desktop"
+
+
+def test_a_one_point_disagreement_does_not_take_the_dial_back():
+    """Both honestly dated, the newer one a point lower: within a window
+    that is a disagreement, not a decrease."""
+    m = normalizer.merge([
+        desktop(NOW - 120, session=40.0, weekly=73.0),
+        cli(NOW - 5, session=39.0, weekly=72.0),
+    ])
+    assert m.session_pct == 40.0
+    assert m.weekly_pct == 73.0
+
+
+def test_a_sub_point_disagreement_across_the_rounding_line_holds_too():
+    """39.6 draws as 40 and 39.4 as 39 -- (int32_t)(pct + 0.5) on the
+    board -- so 0.2 of disagreement is a whole visible point."""
+    m = normalizer.merge([
+        desktop(NOW - 120, session=39.6),
+        cli(NOW - 5, session=39.4),
+    ])
+    assert m.session_pct == 39.6
+
+
+def test_the_hold_never_reaches_past_one_point():
+    """Beyond a point it is news, and recency decides as it always has."""
+    m = normalizer.merge([
+        desktop(NOW - 120, session=42.0),
+        cli(NOW - 5, session=39.0),
+    ])
+    assert m.session_pct == 39.0
+
+
+def test_a_stale_reading_cannot_hold_the_dial():
+    m = normalizer.merge([
+        desktop(NOW - 7200, session=40.0, stale=True),
+        cli(NOW - 5, session=39.0),
+    ])
+    assert m.session_pct == 39.0
+    assert m.stale is False
+
+
+def test_a_newer_higher_reading_always_wins():
+    m = normalizer.merge([
+        desktop(NOW - 120, session=39.0),
+        cli(NOW - 5, session=40.0),
+    ])
+    assert m.session_pct == 40.0
+    assert m.src == "cli"
+
+
+def test_the_hold_does_not_outlive_a_reset():
+    """The rule the module docstring rejects, pinned again with the hold in
+    place: a reset is tens of points, not one."""
+    m = normalizer.merge([
+        desktop(NOW - 600, session=90.0),
+        cli(NOW - 10, session=0.0),
+    ])
+    assert m.session_pct == 0.0
+
+
+def test_the_age_on_the_wire_is_still_the_files():
+    """reading_at ranks; it never reaches the panel. A Claude Code in use
+    whose numbers have not ticked over for ten minutes must not be drawn ten
+    minutes old -- the Wi-Fi feed would call that stale at 120 s."""
+    m = normalizer.merge([base.NormalizedUsageFrame(
+        provider="claude", src="cli", observed_at=NOW - 5,
+        reading_at=NOW - 600, session_pct=39.0)])
+    msg = protocol.frame_to_usage(m, NOW)
+
+    assert m.observed_at == NOW - 5
+    assert m.reading_at == NOW - 600
+    assert msg["age_s"] == 5
+
+
+def test_reading_at_defaults_to_observed_at():
+    """Every source whose file changes only when its numbers do."""
+    assert desktop(NOW - 30, session=1.0).reading_at == NOW - 30

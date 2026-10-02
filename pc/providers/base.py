@@ -185,6 +185,29 @@ class NormalizedUsageFrame:
     # None means "the same as observed_at", filled in below, so no provider
     # has to know this field exists and any frame is a valid input to merge().
     active_at: object = None
+    # When these NUMBERS were taken, as far as the source can tell, for the
+    # normalizer's recency contest and nothing else. A third time, and the
+    # one `observed_at` was always meant to be and for one source is not.
+    #
+    # Claude Code rewrites statusline.json every time it renders, but the
+    # `rate_limits` block inside holds whatever it last fetched, on its own
+    # slower schedule. So the file's mtime -- `observed_at` for that source
+    # -- advances while its numbers stay frozen, and a freshly re-rendered
+    # old number beat an honestly-dated newer Claude Desktop sample. That is
+    # the 39 -> 40 -> 39 the owner saw (docs/open-bugs/usage-merge-jitter.md).
+    #
+    # Why not just correct `observed_at`: it is also the age on the wire, and
+    # the Wi-Fi feed draws the panel stale once that age reaches 120 s
+    # (firmware/src/main.c, NEV_FEED). Dated by its numbers, a Claude Code
+    # in active use whose percentage had not ticked over for two minutes --
+    # ordinary -- would flap amber, the failure statusline_source's
+    # STALE_AFTER_S comment already paid for once. So the age the panel
+    # draws stays the age of the file, and only the contest for the dial is
+    # told when the numbers really arrived.
+    #
+    # None means "the same as observed_at", filled in below, so every source
+    # whose file changes only when its numbers do needs to know nothing.
+    reading_at: object = None
     session_pct: float = UNKNOWN
     session_resets_at: object = None
     weekly_pct: float = UNKNOWN
@@ -245,6 +268,8 @@ class NormalizedUsageFrame:
     def __post_init__(self):
         if self.active_at is None:
             self.active_at = self.observed_at
+        if self.reading_at is None:
+            self.reading_at = self.observed_at
 
     def n_sessions(self) -> int:
         return self.n_run + self.n_wait + self.n_stuck + self.n_idle

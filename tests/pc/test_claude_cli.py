@@ -172,3 +172,105 @@ def test_the_memory_does_not_survive_a_new_daemon(tmp_path):
     frames = ClaudeCliProvider(path=str(p)).poll(NOW)
     assert len(frames) == 1  # the all() below is vacuously true over an empty list
     assert all(f.session_pct < 0 for f in frames)
+
+
+# --- dating a reading by its numbers, not its renderer ----------------------
+#
+# Claude Code rewrites statusline.json on every render; the `rate_limits`
+# block inside changes only when it fetches. Ranking by the file's mtime let
+# a re-rendered old number beat a newer Claude Desktop sample, and the panel
+# stepped 40 -> 39 -> 40 (docs/open-bugs/usage-merge-jitter.md).
+
+
+def test_a_re_render_keeps_the_time_the_numbers_first_appeared(tmp_path):
+    p = tmp_path / "statusline.json"
+    prov = ClaudeCliProvider(path=str(p))
+
+    write(p, payload(five_hour=39.0), NOW - 600)
+    prov.poll(NOW - 599)
+    write(p, payload(five_hour=39.0), NOW - 5)      # same numbers, re-render
+    frame, = prov.poll(NOW)
+
+    assert frame.reading_at == NOW - 600
+    assert frame.observed_at == NOW - 5     # the age on the wire is unchanged
+    assert frame.stale is False             # and so is staleness
+
+
+def test_new_numbers_are_dated_by_the_render_that_brought_them(tmp_path):
+    p = tmp_path / "statusline.json"
+    prov = ClaudeCliProvider(path=str(p))
+
+    write(p, payload(five_hour=39.0), NOW - 600)
+    prov.poll(NOW - 599)
+    write(p, payload(five_hour=40.0), NOW - 5)
+    frame, = prov.poll(NOW)
+
+    assert frame.reading_at == NOW - 5
+
+
+def test_a_terminal_re_rendering_an_older_fetch_is_not_made_new(tmp_path):
+    """Two terminals, each drawing what IT last fetched. The file alternates
+    between them; the older block must keep its older date every time."""
+    p = tmp_path / "statusline.json"
+    prov = ClaudeCliProvider(path=str(p))
+
+    write(p, payload(five_hour=39.0), NOW - 600)
+    prov.poll(NOW - 599)
+    write(p, payload(five_hour=40.0), NOW - 300)
+    prov.poll(NOW - 299)
+    write(p, payload(five_hour=39.0), NOW - 5)      # the first terminal again
+    frame, = prov.poll(NOW)
+
+    assert frame.reading_at == NOW - 600
+
+
+def test_a_file_that_went_back_in_time_is_dated_afresh(tmp_path):
+    """A restored copy or a clock step: an earlier sighting at a LATER time
+    is not evidence about this one."""
+    p = tmp_path / "statusline.json"
+    prov = ClaudeCliProvider(path=str(p))
+
+    write(p, payload(five_hour=39.0), NOW - 60)
+    prov.poll(NOW - 59)
+    write(p, payload(five_hour=39.0), NOW - 600)
+    frame, = prov.poll(NOW)
+
+    assert frame.reading_at == NOW - 600
+
+
+def test_the_memory_of_first_sightings_is_bounded(tmp_path):
+    from pc.providers import claude_cli
+
+    p = tmp_path / "statusline.json"
+    prov = ClaudeCliProvider(path=str(p))
+    for i in range(claude_cli.READINGS_KEPT * 3):
+        write(p, payload(five_hour=float(i)), NOW - 1000 + i)
+        prov.poll(NOW - 1000 + i)
+
+    assert len(prov._first_seen) == claude_cli.READINGS_KEPT
+
+
+def test_the_reported_trace_no_longer_goes_backwards(tmp_path):
+    """End to end, through the normalizer: the field trace, replayed."""
+    from pc import normalizer
+    from pc.providers import base
+
+    p = tmp_path / "statusline.json"
+    prov = ClaudeCliProvider(path=str(p))
+
+    def desk(at, pct):
+        return base.NormalizedUsageFrame(
+            provider="claude", src="desktop", observed_at=at,
+            session_pct=pct)
+
+    write(p, payload(five_hour=39.0), NOW - 600)
+    shown = [normalizer.merge(prov.poll(NOW - 590)).session_pct]
+    sample = desk(NOW - 300, 40.0)                  # desktop fetches 40
+    shown.append(normalizer.merge(prov.poll(NOW - 290) + [sample]).session_pct)
+    write(p, payload(five_hour=39.0), NOW - 120)    # cli re-renders its 39
+    shown.append(normalizer.merge(prov.poll(NOW - 110) + [sample]).session_pct)
+    write(p, payload(five_hour=41.0), NOW - 10)     # cli fetches again
+    shown.append(normalizer.merge(prov.poll(NOW) + [sample]).session_pct)
+
+    assert shown == [39.0, 40.0, 40.0, 41.0]
+    assert shown == sorted(shown)

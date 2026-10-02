@@ -4,7 +4,37 @@ Reported 2026-10-01: "the number just went from 73 to 72, which I've never
 seen." A cumulative percentage inside a window can only rise until the window
 rolls over, so a decrease is an invariant violation, not a cosmetic wobble.
 
-Nothing here is fixed. This is the measurement, so nobody re-derives it.
+This is the measurement, so nobody re-derives it.
+
+## Status, 2026-10-02
+
+Fixed in the daemon, no firmware change:
+
+- **The Codex variant** (below). `codex_cli.parse_cli_event` now runs each
+  window through `base.rolled_over` -- the Claude status line's rule, moved
+  there -- so a reading whose `resets_at` has passed reads 0% while fresh and
+  unknown once stale, before any recency contest. The panel now corrects
+  itself at the boundary without anyone opening Codex.
+- **Mechanism 2**, the CLI frame dated by its renderer. Fixed by a new frame
+  field, `reading_at`, that the merge ranks by: the first time that exact
+  `rate_limits` block was seen. `observed_at`, and so the `age_s` on the
+  wire, is deliberately left as the file's mtime -- the Wi-Fi feed draws the
+  panel stale at `age_s >= 120` (`firmware/src/main.c`, NEV_FEED), so dating
+  the wire age by the numbers would have made an in-use Claude Code flap
+  amber whenever its percentage held still for two minutes.
+- **Mechanism 1**, no hysteresis. `_pick` now lets a fresh older reading up
+  to `HOLD_PCT` (one point) above the newest keep the dial. A reset, being
+  tens of points, still wins on recency.
+
+`tests/pc/test_claude_cli.py::test_the_reported_trace_no_longer_goes_backwards`
+replays the trace below through the provider and the normalizer: the old code
+draws 39, 40, 39, 41 and the fixed code 39, 40, 40, 41.
+
+**Still open**, everything under "Other findings" below, and in particular:
+the weekly `73 -> 68 -> 76` swing (an eight-point spread, past any one-point
+hold; the Codex weekly spread of 60-62 across rollouts is the measured
+instance), and the log line that names only the session source, which is
+still the first thing to fix before chasing the weekly one.
 
 ## What was observed
 

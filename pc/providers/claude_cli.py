@@ -36,19 +36,34 @@ as good an answer as we have. Persisting it would put a second copy of a
 file that already exists on disk into ~/.blink, with its own invalidation
 and corruption paths, for a case the field report does not contain.
 """
+import dataclasses
+import json
+
 from pc import statusline_source as ss
 from pc.providers import base
 
 PROVIDER_ID = ss.PROVIDER_ID
 SRC_ID = ss.SRC_ID
 
+# How many distinct `rate_limits` blocks to remember the first sight of.
+# Several terminals each re-render the reading THEY last fetched, so the file
+# can alternate between two or three of them; remembering only the latest
+# would re-date an old one as new every time its terminal rendered again. A
+# window's percentage only rises, so a block is never legitimately seen again
+# once it has been superseded, and a handful covers every terminal open.
+READINGS_KEPT = 16
+
 
 class ClaudeCliProvider(base.ProviderParser):
     def __init__(self, path=None):
         self._path = path if path is not None else ss.PAYLOAD_PATH
-        # (payload, mtime) for the last reading that had a five-hour
-        # percentage, or None before the first one. See the module docstring.
+        # (payload, mtime, reading_at) for the last reading that had a
+        # five-hour percentage, or None before the first one. See the module
+        # docstring.
         self._remembered = None
+        # {rate_limits as canonical JSON: the earliest mtime it was seen at},
+        # oldest first. See _reading_at.
+        self._first_seen = {}
 
     def get_provider_id(self) -> str:
         return PROVIDER_ID
@@ -68,18 +83,57 @@ class ClaudeCliProvider(base.ProviderParser):
             return None
         return ss.map_statusline_frame(raw_payload, now_epoch, observed_at)
 
+    def _reading_at(self, payload, mtime):
+        """When this payload's numbers first appeared, not when it was written.
+
+        Claude Code rewrites the file on every render and refreshes the
+        `rate_limits` inside on its own, slower schedule, so the mtime says
+        when the panel was last drawn in a terminal and not when the numbers
+        were taken. The first mtime this exact block was seen at is the
+        closest honest answer there is: the numbers cannot be newer than
+        their first appearance, and every later rewrite of the same block is
+        a re-render, not a reading. See base.NormalizedUsageFrame.reading_at
+        for the jitter this caused and why `observed_at` is left alone.
+
+        Since the daemon started, like the rest of what this class remembers:
+        the first poll after a restart dates a reading by its mtime, which is
+        exactly what every poll did before this existed.
+        """
+        try:
+            key = json.dumps(payload.get("rate_limits"), sort_keys=True)
+        except (TypeError, ValueError):
+            return mtime        # not JSON-shaped; no basis to say otherwise
+        first = self._first_seen.get(key)
+        if first is not None and first <= mtime:
+            return first
+        # New, or the file went BACKWARDS in time (a restored copy, a clock
+        # step) -- then the earlier sighting is not evidence about this one.
+        self._first_seen.pop(key, None)
+        self._first_seen[key] = mtime
+        while len(self._first_seen) > READINGS_KEPT:
+            del self._first_seen[next(iter(self._first_seen))]
+        return mtime
+
+    def _frame(self, payload, now_epoch, mtime, reading_at):
+        frame = self.parse_cli_event(payload, now_epoch, mtime)
+        if frame is not None and reading_at != frame.reading_at:
+            frame = dataclasses.replace(frame, reading_at=reading_at)
+        return frame
+
     def poll(self, now_epoch):
         payload, mtime = ss.read_payload(self._path)
         frames = []
         if payload is not None:
-            live = self.parse_cli_event(payload, now_epoch, mtime)
+            reading_at = (self._reading_at(payload, mtime)
+                          if isinstance(payload, dict) else mtime)
+            live = self._frame(payload, now_epoch, mtime, reading_at)
             if live is not None:
                 frames.append(live)
                 # base.UNKNOWN is -1.0; anything >= 0 is a real percentage,
                 # including the hard 0.0 map_statusline_frame computes for a
                 # window it watched roll over.
                 if live.session_pct >= 0:
-                    self._remembered = (payload, mtime)
+                    self._remembered = (payload, mtime, reading_at)
                     return frames
 
         # The live reading has no session figure, so offer the last one that
@@ -91,8 +145,8 @@ class ClaudeCliProvider(base.ProviderParser):
         # so it wins the dial only when it is genuinely the freshest session
         # reading in the set.
         if self._remembered is not None:
-            payload, mtime = self._remembered
-            remembered = self.parse_cli_event(payload, now_epoch, mtime)
+            payload, mtime, reading_at = self._remembered
+            remembered = self._frame(payload, now_epoch, mtime, reading_at)
             if remembered is not None:
                 frames.append(remembered)
         return frames
