@@ -1595,3 +1595,108 @@ def test_the_real_exhaustion_rollout_reports_a_spent_window(tmp_path):
     assert f.session_resets_at == 1788611397
     # Dated by the exhaustion, so it is not buried as stale.
     assert f.stale is False
+
+
+# --- a window that ended while nobody was using Codex -----------------------
+#
+# Measured on the owner's desk 2026-10-01 14:01, four rollouts at one instant:
+#
+#     age   982s   window=300   used=98.0   resets=-4 min
+#
+# That reading was the freshest on disk until Codex was used again, so the
+# panel said 98 for a window that had already ended -- and the reading said
+# so itself, with its own `resets_at` in the past. These pin the rule that
+# makes the panel correct itself at the boundary without a new sample.
+
+
+def test_a_reading_of_a_window_that_has_ended_reads_zero(tmp_path):
+    """The field case, at the measured ages."""
+    write_rollout(tmp_path, lines=[token_count_line(
+        rate_limits(s_pct=98.0, s_reset=NOW - 240, w_pct=62.0),
+        stamp=_stamp(NOW - 982))])
+    frame, = poll(tmp_path)
+
+    assert frame.session_pct == 0.0
+    assert frame.session_resets_at is None      # a past stamp is no countdown
+    assert frame.session_rolled_at == NOW - 240  # evidence, for the merge
+    assert frame.weekly_pct == 62.0             # its window has not ended
+    assert frame.weekly_resets_at == NOW + 86400
+
+
+def test_a_stale_reading_of_an_ended_window_is_unknown_not_zero(tmp_path):
+    """Neither the old number nor a confident zero.
+
+    Old enough to be stale, the reading cannot vouch that nothing has been
+    used since the reset -- Codex in the cloud or on another machine writes
+    nothing here. So unknown, which is what the Claude status line answers
+    for the same case (base.rolled_over).
+    """
+    old = codex_cli.STALE_AFTER_S + 600
+    write_rollout(tmp_path, lines=[token_count_line(
+        rate_limits(s_pct=98.0, s_reset=NOW - 60), stamp=_stamp(NOW - old))])
+    frame, = poll(tmp_path)
+
+    assert frame.stale is True
+    assert frame.session_pct == base.UNKNOWN
+    assert frame.session_rolled_at == NOW - 60
+
+
+def test_the_panel_corrects_itself_at_the_reset_without_a_new_sample(tmp_path):
+    """The point of the fix: the same file, read either side of its reset.
+
+    Nothing is written between the two polls. Only the clock moves.
+    """
+    reset = NOW + 120
+    write_rollout(tmp_path, lines=[token_count_line(
+        rate_limits(s_pct=98.0, s_reset=reset), stamp=_stamp(NOW - 600))])
+    prov = codex_cli.CodexCliProvider(root=str(tmp_path))
+
+    before, = prov.poll(NOW)
+    after, = prov.poll(reset + 1)
+
+    assert before.session_pct == 98.0
+    assert before.session_resets_at == reset
+    assert after.session_pct == 0.0
+    assert after.session_resets_at is None
+
+
+def test_a_spent_limit_comes_down_when_its_window_resets(tmp_path):
+    """100 because the account ran out is the reading that most needs to
+    clear: it is the one that tells the person not to bother trying."""
+    write_rollout(tmp_path, lines=[
+        token_count_line(rate_limits(s_pct=98.0, s_reset=NOW - 30),
+                         stamp=_stamp(NOW - 900)),
+        token_count_line(exhausted_limits(), stamp=_stamp(NOW - 899)),
+    ])
+    frame, = poll(tmp_path)
+
+    assert frame.session_pct == 0.0
+
+
+def test_a_fresher_post_reset_reading_still_wins(tmp_path):
+    """Several terminals, as measured: the new window's 3% beats the old
+    window's 98% on recency, exactly as before."""
+    write_rollout(tmp_path, name="rollout-old.jsonl", lines=[token_count_line(
+        rate_limits(s_pct=98.0, s_reset=NOW - 240), stamp=_stamp(NOW - 982))])
+    write_rollout(tmp_path, name="rollout-new.jsonl", lines=[token_count_line(
+        rate_limits(s_pct=3.0, s_reset=NOW + 298 * 60),
+        stamp=_stamp(NOW - 6))])
+    frame, = poll(tmp_path)
+
+    assert frame.session_pct == 3.0
+    assert frame.session_resets_at == NOW + 298 * 60
+
+
+def test_an_ended_window_reaches_the_wire_as_zero_not_as_ninety_eight(
+        tmp_path):
+    """Through the normalizer and the protocol, which is what the board
+    actually draws."""
+    from pc import normalizer
+
+    write_rollout(tmp_path, lines=[token_count_line(
+        rate_limits(s_pct=98.0, s_reset=NOW - 240), stamp=_stamp(NOW - 982))])
+    merged = normalizer.merge(poll(tmp_path))
+    msg = protocol.frame_to_usage(merged, NOW)
+
+    assert merged.session_pct == 0.0
+    assert msg["session_resets_in_s"] == -1

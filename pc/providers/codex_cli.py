@@ -710,15 +710,44 @@ class CodexCliProvider(base.ProviderParser):
             return None
         if limit_reached and s_pct >= 0:
             s_pct = 100.0
+        stale = (now_epoch - observed_at) > STALE_AFTER_S
+
+        # A reading of a window that has already ended, decided here, before
+        # poll() runs its recency contest and long before the normalizer's.
+        #
+        # This file is written only while Codex runs. Nothing polls it, so
+        # when a window rolls over with nobody using Codex, the freshest
+        # reading on disk is the last one taken in the window that just
+        # ended, and it stays the freshest for as long as Codex stays closed
+        # -- days, if that is how long it is. Measured 2026-10-01: the panel
+        # said 98 because the newest rollout said `used=98.0`, four minutes
+        # after its own `resets_at`. It did not correct itself; it moved only
+        # when the owner resumed a Codex session to prove the point.
+        #
+        # The stamp the clock has passed is the proof, and it was in the
+        # frame all along. So the same rule the Claude status line applies to
+        # the same situation -- 0% while the reading is fresh, unknown once it
+        # is stale, the reset time dropped and the rollover reported as
+        # evidence -- see base.rolled_over for why each of the three.
+        #
+        # After the limit_reached override above, not before: a session dial
+        # pinned at 100 because the account ran out is exactly the reading
+        # that has to come down when the window it ran out of resets.
+        s_pct, s_reset, s_rolled = base.rolled_over(
+            s_pct, _epoch((session or {}).get("resets_at")), now_epoch, stale)
+        w_pct, w_reset, w_rolled = base.rolled_over(
+            w_pct, _epoch((weekly or {}).get("resets_at")), now_epoch, stale)
         return base.NormalizedUsageFrame(
             provider=PROVIDER_ID,
             src=SRC_ID,
             observed_at=observed_at,
             session_pct=s_pct,
-            session_resets_at=_epoch((session or {}).get("resets_at")),
+            session_resets_at=s_reset,
             weekly_pct=w_pct,
-            weekly_resets_at=_epoch((weekly or {}).get("resets_at")),
-            stale=(now_epoch - observed_at) > STALE_AFTER_S,
+            weekly_resets_at=w_reset,
+            stale=stale,
+            session_rolled_at=s_rolled,
+            weekly_rolled_at=w_rolled,
         )
 
     def poll(self, now_epoch):
